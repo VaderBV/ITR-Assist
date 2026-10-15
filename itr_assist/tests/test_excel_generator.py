@@ -214,17 +214,17 @@ class TestITRWorkbookGenerator(unittest.TestCase):
         self.assertAlmostEqual(ws["J5"].value, 2800.0, places=1)  # Peak USD (Working)
         self.assertEqual(ws["K5"].value, "2025-12-31")             # Peak Date
         self.assertAlmostEqual(ws["L5"].value, 89.47, places=1)    # Peak Rate
-        self.assertIn("E*TRADE Statement", ws["M5"].value)         # Source Peak
+        self.assertIn("(E*TRADE) Statement", ws["M5"].value)       # Source Peak (broker name + "Statement")
         # Closing Balance Group: Statutory Col 10 followed immediately by Working cols
         self.assertEqual(ws["N5"].value, 250516)  # Closing INR
         self.assertAlmostEqual(ws["O5"].value, 2800.0, places=1)  # Closing USD (Working)
         self.assertEqual(ws["P5"].value, "2025-12-31")             # Closing Date
         self.assertAlmostEqual(ws["Q5"].value, 89.47, places=1)    # Closing Rate
-        self.assertIn("E*TRADE Statement", ws["R5"].value)         # Source Closing
+        self.assertIn("(E*TRADE) Statement", ws["R5"].value)       # Source Closing
         # Gross Amount Group: Statutory Col 11 followed immediately by Working cols
         self.assertEqual(ws["S5"].value, 8736)    # Gross Amount INR
         self.assertAlmostEqual(ws["T5"].value, 100.0, places=1)    # Gross USD (Working)
-        self.assertIn("E*TRADE CY 2025 Statement", ws["U5"].value) # Source Gross
+        self.assertIn("(E*TRADE) CY 2025 Statement", ws["U5"].value) # Source Gross - uses the actual broker_name + the real filing calendar year
         self.assertEqual(ws["V5"].value, "D")     # Nature of Amount (Col 12)
 
     def test_table_a3_content(self):
@@ -264,7 +264,7 @@ class TestITRWorkbookGenerator(unittest.TestCase):
         self.assertAlmostEqual(ws["AC5"].value, 14.29, places=1)   # Gross Dividends USD (Working)
         self.assertEqual(ws["AE5"].value, 0)                       # Gross Proceeds INR (Col 12)
         self.assertIn("Sold Lot", ws["AF4"].value)                 # Sold Lot Header
-        self.assertEqual(ws["AF5"].value, "YES (Sold 2026)")       # Sold Lot Flag
+        self.assertEqual(ws["AF5"].value, "YES (Sold 2025)")       # Sold Lot Flag - real disposal_date (2025-06-15) year, not a hardcoded guess
 
         # Check total formulas on row 8
         self.assertEqual(ws["J8"].value, "=SUM(J5:J7)")            # Initial Value INR Total
@@ -299,7 +299,7 @@ class TestITRWorkbookGenerator(unittest.TestCase):
         self.assertEqual(ws["E10"].value, "=SUM(E5:E9)")
 
         # Verify transaction table has source document citation on row 15
-        self.assertIn("E*TRADE Statement", ws["M15"].value)
+        self.assertIn("(E*TRADE) Statement", ws["M15"].value)
 
     def test_schedule_fsi_and_tr_content(self):
         ws_fsi = self.wb["Schedule_FSI"]

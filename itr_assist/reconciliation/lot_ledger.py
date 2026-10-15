@@ -23,7 +23,7 @@ class LotLedger:
                     active_lots.append(lot)
         return active_lots
 
-    def get_schedule_fa_lots(self, calendar_year: int = 2025) -> List[ShareLot]:
+    def get_schedule_fa_lots(self, calendar_year: int) -> List[ShareLot]:
         """Return all lots to be declared in Schedule FA Table A3 for the calendar year."""
         cy_start = date(calendar_year, 1, 1)
         cy_end = date(calendar_year, 12, 31)

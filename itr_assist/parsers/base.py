@@ -27,8 +27,18 @@ class BaseStatementParser(ABC):
     """Abstract interface for parsing periodic client account statements."""
 
     @abstractmethod
-    def parse(self, file_paths: List[str], symbol_hint: Optional[str] = None) -> Tuple[List[StatementPeriodSummary], List[DividendEvent]]:
-        """Parse account statement files and return period summaries and dividend events."""
+    def parse(
+        self,
+        file_paths: List[str],
+        symbol_hint: Optional[str] = None,
+        calendar_year_hint: Optional[int] = None,
+    ) -> Tuple[List[StatementPeriodSummary], List[DividendEvent]]:
+        """Parse account statement files and return period summaries and dividend events.
+
+        calendar_year_hint is the user-selected calendar year (first year of the FY being
+        filed). It is used only as a last-resort fallback when a statement's own text does not
+        declare its year — it must never override a year actually read from the document.
+        """
         pass
 
 
@@ -36,8 +46,12 @@ class BaseTaxDocumentParser(ABC):
     """Abstract interface for parsing Form 1042-S / annual tax documents."""
 
     @abstractmethod
-    def parse(self, file_path: str) -> Optional[Form1042SData]:
-        """Parse tax document and return Form 1042-S data."""
+    def parse(self, file_path: str, calendar_year_hint: Optional[int] = None) -> Optional[Form1042SData]:
+        """Parse tax document and return Form 1042-S data.
+
+        calendar_year_hint is used only as a last-resort fallback when the document's own text
+        does not state its calendar year.
+        """
         pass
 
 
@@ -64,11 +78,16 @@ class BaseBrokerAdapter(ABC):
         pass
 
     @abstractmethod
-    def parse_statements(self, file_paths: List[str], symbol_hint: Optional[str] = None) -> Tuple[List[StatementPeriodSummary], List[DividendEvent]]:
+    def parse_statements(
+        self,
+        file_paths: List[str],
+        symbol_hint: Optional[str] = None,
+        calendar_year_hint: Optional[int] = None,
+    ) -> Tuple[List[StatementPeriodSummary], List[DividendEvent]]:
         """Extract periodic statement summaries and dividend transactions."""
         pass
 
     @abstractmethod
-    def parse_tax_documents(self, file_path: str) -> Optional[Form1042SData]:
+    def parse_tax_documents(self, file_path: str, calendar_year_hint: Optional[int] = None) -> Optional[Form1042SData]:
         """Extract Form 1042-S foreign income and tax withholding data."""
         pass

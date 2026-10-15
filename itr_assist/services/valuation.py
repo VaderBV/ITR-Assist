@@ -30,9 +30,9 @@ class ScheduleFATableA2Result:
     gross_amount_paid_credited_inr: int
     nature_of_amount: str
     gross_amount_paid_credited_usd: float = 0.0
-    source_peak: str = "E*TRADE Statement (Dec 2025, Page 2: Peak on 12/16/2025) & SBI TTBR Sheet"
-    source_closing: str = "E*TRADE Statement (Dec 2025, Page 1: Ending Net Portfolio Value) & SBI TTBR Sheet"
-    source_gross: str = "E*TRADE CY 2025 Statement Dividends & Form 1042-S Box 2"
+    source_peak: str = "Broker Statement (Peak Account Value) & SBI TTBR Sheet"
+    source_closing: str = "Broker Statement (Ending Net Portfolio Value) & SBI TTBR Sheet"
+    source_gross: str = "Broker Calendar Year Statement Dividends & Form 1042-S Box 2"
 
 
 @dataclass
@@ -62,6 +62,7 @@ class ScheduleFATableA3LotResult:
     gross_dividends_inr: int
     gross_proceeds_inr: int
     is_sold_lot: bool = False
+    disposal_date: Optional[date] = None
     initial_cost_usd: float = 0.0
     peak_balance_usd: float = 0.0
     closing_balance_usd: float = 0.0
@@ -143,7 +144,7 @@ class ValuationEngine:
         self.account_number = account_number
         self.account_open_date = account_open_date
 
-    def compute_table_a3(self, calendar_year: int = 2025, cy_dividends: Optional[List[DividendEvent]] = None) -> List[ScheduleFATableA3LotResult]:
+    def compute_table_a3(self, calendar_year: int, cy_dividends: Optional[List[DividendEvent]] = None) -> List[ScheduleFATableA3LotResult]:
         """Compute Schedule FA Table A3 row details for each lot active in calendar_year."""
         fa_lots = self.ledger.get_schedule_fa_lots(calendar_year)
         results: List[ScheduleFATableA3LotResult] = []
@@ -207,6 +208,7 @@ class ValuationEngine:
                 gross_dividends_inr=lot_divs_inr.get(lot.lot_id, 0),
                 gross_proceeds_inr=0,
                 is_sold_lot=lot.is_sold_lot,
+                disposal_date=lot.disposal_date,
                 initial_cost_usd=init_cost_usd,
                 peak_balance_usd=peak_val_usd,
                 closing_balance_usd=close_val_usd,
@@ -270,9 +272,9 @@ class ValuationEngine:
                 tot_div_inr += round(d.gross_amount_usd * pay_rate)
 
         shs_divisor = max(1.0, dec_summary.shares_held)
-        src_peak_a2 = f"E*TRADE Statement & Yahoo Finance {primary_symbol} Close (${peak_usd / shs_divisor:.2f} on {peak_date.strftime('%Y-%m-%d')}) & SBI TTBR ₹{peak_rate:.2f}"
-        src_close_a2 = f"E*TRADE Statement (Dec 2025, Page 1: Ending Net Portfolio Value) & SBI TTBR Sheet (31-Dec-2025)"
-        src_gross_a2 = "E*TRADE CY 2025 Statement Account Activity & IRS Form 1042-S Box 2"
+        src_peak_a2 = f"{self.broker_name} Statement & Yahoo Finance {primary_symbol} Close (${peak_usd / shs_divisor:.2f} on {peak_date.strftime('%Y-%m-%d')}) & SBI TTBR ₹{peak_rate:.2f}"
+        src_close_a2 = f"{self.broker_name} Statement (Dec {calendar_year}, Page 1: Ending Net Portfolio Value) & SBI TTBR Sheet (31-Dec-{calendar_year})"
+        src_gross_a2 = f"{self.broker_name} CY {calendar_year} Statement Account Activity & IRS Form 1042-S Box 2"
 
         return ScheduleFATableA2Result(
             country_name="UNITED STATES OF AMERICA",
@@ -302,10 +304,25 @@ class ValuationEngine:
     def compute_schedule_os_and_ftc(
         self,
         fy_dividends: List[DividendEvent],
-        indian_tax_rate: float = 0.312  # 30% slab + 4% cess
+        indian_tax_rate: float = 0.312,  # 30% slab + 4% cess
+        calendar_year: Optional[int] = None
     ) -> Tuple[ScheduleOSResult, FTCResult]:
-        """Compute Schedule OS dividend buckets and Foreign Tax Credit claim for FY 2025-26."""
+        """Compute Schedule OS dividend buckets and Foreign Tax Credit claim for the Indian FY starting 1-Apr-calendar_year.
+
+        calendar_year is the first (April-starting) calendar year of the Financial Year, e.g. for
+        FY 2025-26 pass calendar_year=2025. If omitted, it is inferred as the earliest pay_date
+        year among fy_dividends (kept for backward compatibility with older callers/tests).
+        """
         items: List[DividendTaxResult] = []
+
+        if calendar_year is None:
+            calendar_year = min((d.pay_date.year for d in fy_dividends), default=date.today().year)
+        next_year = calendar_year + 1
+
+        installment_1_end = date(calendar_year, 6, 15)
+        installment_2_end = date(calendar_year, 9, 15)
+        installment_3_end = date(calendar_year, 12, 15)
+        installment_4_end = date(next_year, 3, 15)
 
         b1, b2, b3, b4, b5 = 0, 0, 0, 0, 0
         total_gross_usd = 0.0
@@ -330,23 +347,23 @@ class ValuationEngine:
 
             # Classify into 5 advance-tax installments
             p_date = d.pay_date
-            if p_date <= date(2025, 6, 15):
+            if p_date <= installment_1_end:
                 bucket = "Upto15Of6"
                 b1 += gross_inr
-            elif p_date <= date(2025, 9, 15):
+            elif p_date <= installment_2_end:
                 bucket = "Upto15Of9"
                 b2 += gross_inr
-            elif p_date <= date(2025, 12, 15):
+            elif p_date <= installment_3_end:
                 bucket = "Up16Of9To15Of12"
                 b3 += gross_inr
-            elif p_date <= date(2026, 3, 15):
+            elif p_date <= installment_4_end:
                 bucket = "Up16Of12To15Of3"
                 b4 += gross_inr
             else:
                 bucket = "Up16Of3To31Of3"
                 b5 += gross_inr
 
-            src_item = f"E*TRADE Statement ({d.pay_date.strftime('%b %Y')} Activity) & Form 1042-S"
+            src_item = f"{self.broker_name} Statement ({d.pay_date.strftime('%b %Y')} Activity) & Form 1042-S"
 
             items.append(DividendTaxResult(
                 pay_date=d.pay_date,

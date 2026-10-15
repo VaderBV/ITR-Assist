@@ -19,20 +19,34 @@ MONTH_MAP = {
 class ETradeStatementParser(BaseStatementParser):
     """Parses monthly/multi-month E*TRADE client statement PDFs."""
 
-    def parse(self, file_paths: List[str], symbol_hint: Optional[str] = None) -> Tuple[List[StatementPeriodSummary], List[DividendEvent]]:
-        """Extract all period summaries and dividend events from E*TRADE statement files."""
+    def parse(
+        self,
+        file_paths: List[str],
+        symbol_hint: Optional[str] = None,
+        calendar_year_hint: Optional[int] = None,
+    ) -> Tuple[List[StatementPeriodSummary], List[DividendEvent]]:
+        """Extract all period summaries and dividend events from E*TRADE statement files.
+
+        calendar_year_hint (the user-selected CY, e.g. 2025 for FY 2025-26) is only a last-resort
+        fallback for the rare page where the statement's own header text can't be matched by the
+        year regex below. It never overrides a year actually read from the document.
+        """
         summaries: List[StatementPeriodSummary] = []
         dividends: List[DividendEvent] = []
 
         seen_div_keys = set()
         seen_period_keys = set()
+        fallback_year = calendar_year_hint if calendar_year_hint is not None else date.today().year
 
         for fpath in file_paths:
             reader = PdfReader(fpath)
 
-            year_hint = 2025
-            if "2026" in fpath or "Jan-March26" in fpath:
-                year_hint = 2026
+            # Filename is only a weak secondary hint; the per-page CLIENT STATEMENT header
+            # (matched below as `page_year`) takes precedence whenever it's present.
+            year_hint = fallback_year
+            next_year_str = str(fallback_year + 1)
+            if next_year_str in fpath or "jan-march" in fpath.lower():
+                year_hint = fallback_year + 1
 
             for idx, page in enumerate(reader.pages):
                 txt = page.extract_text() or ""
@@ -89,8 +103,11 @@ class ETradeStatementParser(BaseStatementParser):
 
                     m_num, d_num = map(int, date_part.split('/'))
                     div_year = page_year
-                    if page_year == 2026 and m_num > 3:
-                        div_year = 2025
+                    # A page from the Q4/FY-end ("Jan-March") statement is labeled with the
+                    # later calendar year, but can carry a trailing Account Activity section for
+                    # a transaction dated after March, which actually belongs to the prior CY.
+                    if page_year == fallback_year + 1 and m_num > 3:
+                        div_year = fallback_year
                     pay_date = date(div_year, m_num, d_num)
 
                     div_key = (pay_date, sym.strip(), amt)

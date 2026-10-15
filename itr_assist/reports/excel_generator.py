@@ -8,6 +8,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from itr_assist.models import DividendEvent, Form1042SData, ReconciliationReport, StatementPeriodSummary
+from itr_assist.services.open_years import fy_to_calendar_year
 from itr_assist.services.sbi_rates import SBIRateService
 from itr_assist.services.valuation import (
     FTCResult,
@@ -82,6 +83,11 @@ class ITRWorkbookGenerator:
         val_report: Optional[Any] = None
     ) -> str:
         """Generate the complete multi-sheet workbook."""
+        # Single source of truth for which calendar year(s) this workbook covers, derived from
+        # the FY the caller selected - every sheet below uses these instead of a hardcoded year.
+        cy = fy_to_calendar_year(fy)
+        next_cy = cy + 1
+
         if sbi_service is None:
             try:
                 sbi_service = SBIRateService(auto_download=False)
@@ -92,8 +98,8 @@ class ITRWorkbookGenerator:
             try:
                 from itr_assist.validation import ValidationEngine
                 validator = ValidationEngine(sbi_service=sbi_service)
-                cy_div_usd = sum(d.gross_amount_usd for d in dividends if d.pay_date.year == 2025)
-                cy_tax_usd = sum(d.tax_withheld_usd for d in dividends if d.pay_date.year == 2025)
+                cy_div_usd = sum(d.gross_amount_usd for d in dividends if d.pay_date.year == cy)
+                cy_tax_usd = sum(d.tax_withheld_usd for d in dividends if d.pay_date.year == cy)
                 val_report = validator.validate(
                     a2=a2_result,
                     a3_lots=a3_lots,
@@ -109,18 +115,18 @@ class ITRWorkbookGenerator:
             except Exception:
                 val_report = None
 
-        self._build_dashboard(taxpayer_name, pan, ay, fy, a2_result, a3_lots, os_result, ftc_result, reconciliation_report, val_report)
-        self._build_schedule_fa_table_a2(a2_result)
-        self._build_schedule_fa_table_a3(a3_lots)
-        self._build_schedule_os(os_result)
-        self._build_schedule_fsi(ftc_result, pan)
-        self._build_schedule_tr(ftc_result, pan)
+        self._build_dashboard(taxpayer_name, pan, ay, fy, a2_result, a3_lots, os_result, ftc_result, reconciliation_report, val_report, cy, next_cy)
+        self._build_schedule_fa_table_a2(a2_result, cy)
+        self._build_schedule_fa_table_a3(a3_lots, cy)
+        self._build_schedule_os(os_result, fy, cy, next_cy)
+        self._build_schedule_fsi(ftc_result, pan, ay)
+        self._build_schedule_tr(ftc_result, pan, ay)
         self._build_form_67(ftc_result, taxpayer_name, pan, ay)
         if val_report:
-            self._build_validation_report(val_report)
-        self._build_sbi_rate_register(a2_result, a3_lots, os_result, ftc_result, sbi_service)
-        self._build_audit_lot_peaks(a3_lots)
-        self._build_audit_dividends(os_result, dividends)
+            self._build_validation_report(val_report, ay)
+        self._build_sbi_rate_register(a2_result, a3_lots, os_result, ftc_result, sbi_service, fy, cy)
+        self._build_audit_lot_peaks(a3_lots, cy)
+        self._build_audit_dividends(os_result, dividends, sbi_service)
         self._build_audit_statements(statement_summaries)
 
         try:
@@ -145,7 +151,9 @@ class ITRWorkbookGenerator:
         os_res: ScheduleOSResult,
         ftc_res: FTCResult,
         report: ReconciliationReport,
-        val_report: Optional[Any] = None
+        val_report: Optional[Any] = None,
+        cy: int = 2025,
+        next_cy: int = 2026
     ) -> None:
         """Sheet 1: Executive Dashboard & Cross-Verification Summary."""
         ws = self.wb.create_sheet(title="Dashboard_Summary")
@@ -167,10 +175,10 @@ class ITRWorkbookGenerator:
             cell.border = self._border_thin
 
         kpi_rows = [
-            ("Schedule FA - Table A2", "Custodial Account Peak Balance (CY 2025)", f"${a2.peak_balance_usd:,.2f}", a2.peak_balance_inr, f"Peak on {a2.peak_date} @ SBI TTBR {a2.peak_rate_inr:.2f}"),
-            ("Schedule FA - Table A2", "Custodial Account Closing Balance (as on Dec 31, 2025)", f"${a2.closing_balance_usd:,.2f}", a2.closing_balance_inr, f"Dec 31, 2025 Value @ SBI TTBR {a2.closing_rate_inr:.2f}"),
-            ("Schedule FA - Table A3", f"Total Equity Lots Declared (Active in CY 2025)", f"{len(a3_lots)} Lots", sum(l.closing_balance_inr for l in a3_lots), f"Includes {report.sold_lots_count} Sold Lot (Sold in 2026)"),
-            ("Schedule OS", "Gross Foreign Dividends (FY 2025-26)", f"${sum(i.gross_usd for i in os_res.items):,.2f}", os_res.total_dividend_inr, "Income from Other Sources (5 Installments)"),
+            ("Schedule FA - Table A2", f"Custodial Account Peak Balance (CY {cy})", f"${a2.peak_balance_usd:,.2f}", a2.peak_balance_inr, f"Peak on {a2.peak_date} @ SBI TTBR {a2.peak_rate_inr:.2f}"),
+            ("Schedule FA - Table A2", f"Custodial Account Closing Balance (as on Dec 31, {cy})", f"${a2.closing_balance_usd:,.2f}", a2.closing_balance_inr, f"Dec 31, {cy} Value @ SBI TTBR {a2.closing_rate_inr:.2f}"),
+            ("Schedule FA - Table A3", f"Total Equity Lots Declared (Active in CY {cy})", f"{len(a3_lots)} Lots", sum(l.closing_balance_inr for l in a3_lots), f"Includes {report.sold_lots_count} Sold Lot (Sold in {next_cy})"),
+            ("Schedule OS", f"Gross Foreign Dividends (FY {fy})", f"${sum(i.gross_usd for i in os_res.items):,.2f}", os_res.total_dividend_inr, "Income from Other Sources (5 Installments)"),
             ("Schedule FSI / TR", "Foreign Taxes Paid Abroad (25% US Withholding)", f"${sum(i.tax_usd for i in os_res.items):,.2f}", ftc_res.foreign_tax_paid_inr, "Rule 128(8) Conversion on Deduction Dates"),
             ("Form 67 / Schedule TR", "Foreign Tax Credit (FTC) Claimed u/s 90", f"${sum(i.tax_usd for i in os_res.items):,.2f}", ftc_res.tax_relief_claimed_inr, "DTAA Article 10 (Restricted to Indian Tax Payable)"),
         ]
@@ -213,7 +221,7 @@ class ITRWorkbookGenerator:
         if val_report:
             recon_checks.append(
                 (
-                    "CBDT Statutory & Schema Rules (AY 2026-27)",
+                    f"CBDT Statutory & Schema Rules (AY {ay})",
                     f"{val_report.scorecard.passed}/{val_report.scorecard.total_rules} Rules Evaluated",
                     val_report.scorecard.compute_status(),
                     "Passed 100% of CBDT JSON Schema, Systems PDF & IT Rules 115/128/90 (See Audit_Validation_Report)",
@@ -284,14 +292,14 @@ class ITRWorkbookGenerator:
 
         self._auto_fit_columns(ws)
 
-    def _build_schedule_fa_table_a2(self, a2: ScheduleFATableA2Result) -> None:
+    def _build_schedule_fa_table_a2(self, a2: ScheduleFATableA2Result, cy: int = 2025) -> None:
         """Sheet 2: Schedule FA Table A2 - Foreign Custodial Accounts."""
         ws = self.wb.create_sheet(title="Schedule_FA_Table_A2")
         ws.views.sheetView[0].showGridLines = True
 
         ws["A1"] = "SCHEDULE FA: TABLE A2 — DETAILS OF FOREIGN CUSTODIAL ACCOUNTS HELD DURING THE CALENDAR YEAR"
         ws["A1"].font = self._font_title
-        ws["A2"] = "Relevant for Calendar Year: January 1, 2025 to December 31, 2025 (Official Government Schema: DtlsForeignCustodialAcc)"
+        ws["A2"] = f"Relevant for Calendar Year: January 1, {cy} to December 31, {cy} (Official Government Schema: DtlsForeignCustodialAcc)"
         ws["A2"].font = self._font_subtitle
 
         headers = [
@@ -312,7 +320,7 @@ class ITRWorkbookGenerator:
             # Closing Balance Group:
             ("Closing Balance (₹)\n(Col 10 - Statutory ITR)", False),
             ("Closing Amount in USD ($)\n[Working - Scrutiny]", True),
-            ("Closing Valuation Date\n[31-Dec-2025]", True),
+            (f"Closing Valuation Date\n[31-Dec-{cy}]", True),
             ("Closing SBI TTBR Rate (₹)\n[Rate Used]", True),
             ("Closing Balance Data Source\n[Audit Provenance]", True),
             # Gross Income Group:
@@ -377,8 +385,8 @@ class ITRWorkbookGenerator:
         ws["A7"].font = self._font_bold
         notes = [
             f"1. Peak Balance (Col 9): Computed on {a2.peak_date} when total custodial holdings reached ${a2.peak_balance_usd:,.2f} converted at SBI TTBR ₹ {a2.peak_rate_inr:.2f}.",
-            f"2. Closing Balance (Col 10): Computed as on Dec 31, 2025 with total account value ${a2.closing_balance_usd:,.2f} converted at Dec 31 SBI TTBR ₹ {a2.closing_rate_inr:.2f}.",
-            f"3. Gross Amount (Col 11): Total gross dividends received during Calendar Year 2025 (${a2.gross_amount_paid_credited_usd:.2f}) converted to INR.",
+            f"2. Closing Balance (Col 10): Computed as on Dec 31, {cy} with total account value ${a2.closing_balance_usd:,.2f} converted at Dec 31 SBI TTBR ₹ {a2.closing_rate_inr:.2f}.",
+            f"3. Gross Amount (Col 11): Total gross dividends received during Calendar Year {cy} (${a2.gross_amount_paid_credited_usd:.2f}) converted to INR.",
             f"4. Nature of Amount (Col 12): 'D' signifies Dividend income as per CBDT schema options.",
             f"5. Source Evidence: Full monthly statements and SBI Card rate sheets are cross-verified and indexed in Sheet 1."
         ]
@@ -388,14 +396,14 @@ class ITRWorkbookGenerator:
 
         self._auto_fit_columns(ws)
 
-    def _build_schedule_fa_table_a3(self, a3_lots: List[ScheduleFATableA3LotResult]) -> None:
+    def _build_schedule_fa_table_a3(self, a3_lots: List[ScheduleFATableA3LotResult], cy: int = 2025) -> None:
         """Sheet 3: Schedule FA Table A3 - Details of Foreign Equity and Debt Interest."""
         ws = self.wb.create_sheet(title="Schedule_FA_Table_A3")
         ws.views.sheetView[0].showGridLines = True
 
         ws["A1"] = "SCHEDULE FA: TABLE A3 — DETAILS OF FOREIGN EQUITY AND DEBT INTEREST HELD IN ANY ENTITY"
         ws["A1"].font = self._font_title
-        ws["A2"] = "Relevant for Calendar Year: Jan 1, 2025 to Dec 31, 2025 (Official Government Schema: DtlsForeignEquityDebtInterest)"
+        ws["A2"] = f"Relevant for Calendar Year: Jan 1, {cy} to Dec 31, {cy} (Official Government Schema: DtlsForeignEquityDebtInterest)"
         ws["A2"].font = self._font_subtitle
 
         headers = [
@@ -426,7 +434,7 @@ class ITRWorkbookGenerator:
             ("Closing Balance\n(₹) (Col 10)", False),
             ("Closing Value ($)\n[Working - USD]", True),
             ("Dec 31 Close Price ($)\n[Closing FMV]", True),
-            ("Dec 31 Valuation Date\n[31-Dec-2025]", True),
+            (f"Dec 31 Valuation Date\n[31-Dec-{cy}]", True),
             ("Dec 31 SBI TTBR (₹)\n[Rate Used]", True),
             ("Closing Balance Source\n[Audit Provenance]", True),
             # Gross Amount Group:
@@ -452,7 +460,10 @@ class ITRWorkbookGenerator:
 
         for idx, lot in enumerate(a3_lots, start=1):
             is_even = (idx % 2 == 0)
-            sold_text = "YES (Sold 2026)" if lot.is_sold_lot else "NO"
+            if lot.is_sold_lot:
+                sold_text = f"YES (Sold {lot.disposal_date.year})" if lot.disposal_date else f"YES (Sold after {cy})"
+            else:
+                sold_text = "NO"
 
             row_data = [
                 # Col 1-9: Basic Identification
@@ -575,12 +586,12 @@ class ITRWorkbookGenerator:
 
         self._auto_fit_columns(ws)
 
-    def _build_schedule_os(self, os_res: ScheduleOSResult) -> None:
+    def _build_schedule_os(self, os_res: ScheduleOSResult, fy: str = "2025-26", cy: int = 2025, next_cy: int = 2026) -> None:
         """Sheet 4: Schedule OS - Foreign Dividend Income & 5 Advance Tax Installments."""
         ws = self.wb.create_sheet(title="Schedule_OS")
         ws.views.sheetView[0].showGridLines = True
 
-        ws["A1"] = "SCHEDULE OS: INCOME FROM OTHER SOURCES — FOREIGN DIVIDENDS (INDIAN FY 2025–26)"
+        ws["A1"] = f"SCHEDULE OS: INCOME FROM OTHER SOURCES — FOREIGN DIVIDENDS (INDIAN FY {fy})"
         ws["A1"].font = self._font_title
         ws["A2"] = "Governed by Rule 115(1) (Rate on last business day of preceding month) & Section 234C 5 Installments"
         ws["A2"].font = self._font_subtitle
@@ -596,11 +607,11 @@ class ITRWorkbookGenerator:
             cell.border = self._border_thin
 
         installments = [
-            ("Installment 1", "Up to 15th June 2025", "Upto15Of6", os_res.upto_15_jun_inr),
-            ("Installment 2", "16th June to 15th September 2025", "Upto15Of9", os_res.upto_15_sep_inr),
-            ("Installment 3", "16th September to 15th December 2025", "Up16Of9To15Of12", os_res.upto_15_dec_inr),
-            ("Installment 4", "16th December 2025 to 15th March 2026", "Up16Of12To15Of3", os_res.upto_15_mar_inr),
-            ("Installment 5", "16th March to 31st March 2026", "Up16Of3To31Of3", os_res.upto_31_mar_inr),
+            ("Installment 1", f"Up to 15th June {cy}", "Upto15Of6", os_res.upto_15_jun_inr),
+            ("Installment 2", f"16th June to 15th September {cy}", "Upto15Of9", os_res.upto_15_sep_inr),
+            ("Installment 3", f"16th September to 15th December {cy}", "Up16Of9To15Of12", os_res.upto_15_dec_inr),
+            ("Installment 4", f"16th December {cy} to 15th March {next_cy}", "Up16Of12To15Of3", os_res.upto_15_mar_inr),
+            ("Installment 5", f"16th March to 31st March {next_cy}", "Up16Of3To31Of3", os_res.upto_31_mar_inr),
         ]
 
         row_idx = 5
@@ -686,12 +697,12 @@ class ITRWorkbookGenerator:
 
         self._auto_fit_columns(ws)
 
-    def _build_schedule_fsi(self, ftc: FTCResult, pan: str) -> None:
+    def _build_schedule_fsi(self, ftc: FTCResult, pan: str, ay: str = "2026-27") -> None:
         """Sheet 5: Schedule FSI - Details of Income from Outside India and Tax Relief."""
         ws = self.wb.create_sheet(title="Schedule_FSI")
         ws.views.sheetView[0].showGridLines = True
 
-        ws["A1"] = "SCHEDULE FSI: DETAILS OF INCOME FROM OUTSIDE INDIA AND TAX RELIEF (AY 2026–27)"
+        ws["A1"] = f"SCHEDULE FSI: DETAILS OF INCOME FROM OUTSIDE INDIA AND TAX RELIEF (AY {ay})"
         ws["A1"].font = self._font_title
         ws["A2"] = "Official Government Schema Definition: ScheduleFSIDtls (Head: Income from Other Sources)"
         ws["A2"].font = self._font_subtitle
@@ -765,12 +776,12 @@ class ITRWorkbookGenerator:
 
         self._auto_fit_columns(ws)
 
-    def _build_schedule_tr(self, ftc: FTCResult, pan: str) -> None:
+    def _build_schedule_tr(self, ftc: FTCResult, pan: str, ay: str = "2026-27") -> None:
         """Sheet 6: Schedule TR - Summary of Tax Relief Claimed for Taxes Paid Outside India."""
         ws = self.wb.create_sheet(title="Schedule_TR")
         ws.views.sheetView[0].showGridLines = True
 
-        ws["A1"] = "SCHEDULE TR: SUMMARY OF TAX RELIEF CLAIMED FOR TAXES PAID OUTSIDE INDIA (AY 2026–27)"
+        ws["A1"] = f"SCHEDULE TR: SUMMARY OF TAX RELIEF CLAIMED FOR TAXES PAID OUTSIDE INDIA (AY {ay})"
         ws["A1"].font = self._font_title
         ws["A2"] = "Official Government Schema Definition: ScheduleTR & ScheduleTR1 (Must match Schedule FSI exactly)"
         ws["A2"].font = self._font_subtitle
@@ -930,7 +941,7 @@ class ITRWorkbookGenerator:
             "1. Filing Due Date: Form 67 must be submitted on or before the due date specified u/s 139(1) for furnishing return of income.",
             "2. Attachments Required: Upload Form 1042-S PDF and E*TRADE 15-Month Statement PDF as proof of foreign tax payment.",
             "3. Digital Verification: Form 67 must be verified electronically via Aadhaar OTP, EVC, or Digital Signature Certificate (DSC).",
-            "4. Portal Reconciliation: Ensure the FTC Claimed amount (₹ 2,051) matches Schedule TR and Schedule FSI identically."
+            f"4. Portal Reconciliation: Ensure the FTC Claimed amount (₹ {ftc.tax_relief_claimed_inr:,}) matches Schedule TR and Schedule FSI identically."
         ]
 
         for item in checklist:
@@ -939,12 +950,12 @@ class ITRWorkbookGenerator:
 
         self._auto_fit_columns(ws)
 
-    def _build_validation_report(self, val_report: Any) -> None:
+    def _build_validation_report(self, val_report: Any, ay: str = "2026-27") -> None:
         """Sheet: Statutory Rules & e-Filing Validation Scorecard."""
         ws = self.wb.create_sheet(title="Audit_Validation_Report")
         ws.views.sheetView[0].showGridLines = True
 
-        ws["A1"] = "CBDT STATUTORY & e-FILING RULES VALIDATION SCORECARD (AY 2026-27)"
+        ws["A1"] = f"CBDT STATUTORY & e-FILING RULES VALIDATION SCORECARD (AY {ay})"
         ws["A1"].font = self._font_title
         ws["A2"] = (
             "Automated statutory verification against CBDT JSON Schema (ITR-2_2026_Main_V1.2.json), "
@@ -1039,7 +1050,9 @@ class ITRWorkbookGenerator:
         a3_lots: List[ScheduleFATableA3LotResult],
         os_res: ScheduleOSResult,
         ftc_res: FTCResult,
-        sbi_service: Optional[SBIRateService] = None
+        sbi_service: Optional[SBIRateService] = None,
+        fy: str = "2025-26",
+        cy: int = 2025
     ) -> None:
         """Sheet 8: Scrutiny Audit Register - Complete SBI TT Buying Rate Date Register."""
         ws = self.wb.create_sheet(title="Audit_SBI_TTBR_Register")
@@ -1047,7 +1060,7 @@ class ITRWorkbookGenerator:
 
         ws["A1"] = "SCRUTINY AUDIT REGISTER: COMPLETE SBI TT BUYING RATE DATE REGISTER & APPLICATION AUDIT"
         ws["A1"].font = self._font_title
-        ws["A2"] = "Statutory record of every SBI TT Buying Rate fetched under Income Tax Rule 115 and Rule 128 for Indian FY 2025–26 / CY 2025"
+        ws["A2"] = f"Statutory record of every SBI TT Buying Rate fetched under Income Tax Rule 115 and Rule 128 for Indian FY {fy} / CY {cy}"
         ws["A2"].font = self._font_subtitle
 
         def get_rollback_info(target_d: date) -> Tuple[date, str]:
@@ -1094,9 +1107,9 @@ class ITRWorkbookGenerator:
         used_d, notes = get_rollback_info(a2.peak_date)
         items.append((
             "Schedule FA - Table A2",
-            "Custodial Account Peak Portfolio Balance (CY 2025)",
+            f"Custodial Account Peak Portfolio Balance (CY {cy})",
             a2.peak_date,
-            "CBDT Schedule FA Instructions / Rule 115 (Peak Value in CY 2025)",
+            f"CBDT Schedule FA Instructions / Rule 115 (Peak Value in CY {cy})",
             used_d,
             a2.peak_rate_inr,
             a2.peak_balance_usd,
@@ -1107,7 +1120,7 @@ class ITRWorkbookGenerator:
         used_d, notes = get_rollback_info(a2.closing_date)
         items.append((
             "Schedule FA - Table A2",
-            "Custodial Account Closing Portfolio Balance (as on Dec 31, 2025)",
+            f"Custodial Account Closing Portfolio Balance (as on Dec 31, {cy})",
             a2.closing_date,
             "CBDT Schedule FA Instructions / Rule 115 (Closing Value on Dec 31)",
             used_d,
@@ -1152,7 +1165,7 @@ class ITRWorkbookGenerator:
                 "Schedule FA - Table A3",
                 f"Closing Balance - Lot {lot.lot_id} ({lot.net_shares} shs @ ${lot.closing_price_usd:.2f})",
                 lot.closing_date,
-                "CBDT Schedule FA Instructions / Value as on Dec 31, 2025",
+                f"CBDT Schedule FA Instructions / Value as on Dec 31, {cy}",
                 used_d,
                 lot.closing_rate_inr,
                 lot.closing_balance_usd,
@@ -1323,14 +1336,14 @@ class ITRWorkbookGenerator:
 
         self._auto_fit_columns(ws)
 
-    def _build_audit_lot_peaks(self, a3_lots: List[ScheduleFATableA3LotResult]) -> None:
+    def _build_audit_lot_peaks(self, a3_lots: List[ScheduleFATableA3LotResult], cy: int = 2025) -> None:
         """Sheet 8: Scrutiny Audit Trail - Lot Peak and Closing Proof."""
         ws = self.wb.create_sheet(title="Audit_Lot_Peaks")
         ws.views.sheetView[0].showGridLines = True
 
         ws["A1"] = "SCRUTINY AUDIT TRAIL: SHARE LOT PEAK & VALUATION MATHEMATICAL PROOFS"
         ws["A1"].font = self._font_title
-        ws["A2"] = "Complete EOD closing price and SBI TT Buying Rate evidence for every share lot active in CY 2025"
+        ws["A2"] = f"Complete EOD closing price and SBI TT Buying Rate evidence for every share lot active in CY {cy}"
         ws["A2"].font = self._font_subtitle
 
         headers = [
@@ -1412,7 +1425,12 @@ class ITRWorkbookGenerator:
 
         self._auto_fit_columns(ws)
 
-    def _build_audit_dividends(self, os_res: ScheduleOSResult, dividends: List[DividendEvent]) -> None:
+    def _build_audit_dividends(
+        self,
+        os_res: ScheduleOSResult,
+        dividends: List[DividendEvent],
+        sbi_service: Optional[SBIRateService] = None
+    ) -> None:
         """Sheet 9: Scrutiny Audit Trail - Pro-Rata Dividend Allocations Matrix."""
         ws = self.wb.create_sheet(title="Audit_Dividend_Allocations")
         ws.views.sheetView[0].showGridLines = True
@@ -1442,9 +1460,15 @@ class ITRWorkbookGenerator:
 
         row_idx = 5
         for d in dividends:
-            # find rule 115 rate
+            # find rule 115 rate - fall back to a real lookup (never a fabricated constant) if
+            # this dividend wasn't present in os_res.items for some reason
             match_item = next((i for i in os_res.items if i.pay_date == d.pay_date), None)
-            r115_rate = match_item.rule_115_rate if match_item else 86.95
+            if match_item:
+                r115_rate = match_item.rule_115_rate
+            elif sbi_service:
+                _, r115_rate = sbi_service.get_rule_115_dividend_rate(d.pay_date)
+            else:
+                r115_rate = None
 
             row_data = [
                 d.pay_date.strftime("%Y-%m-%d"),
