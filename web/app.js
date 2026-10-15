@@ -14,6 +14,7 @@ const state = {
   phase: "idle", // idle | loading | counting | done | error
   pyodide: null,
   errorMessage: "",
+  fy: "2025-26",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -278,7 +279,7 @@ async function generate() {
     }
 
     setPhase("counting");
-    const fy = $("fy-select").value;
+    const fy = state.fy;
     const taxpayerName = $("tp-name").value;
     const pan = $("tp-pan").value;
     pyodide.globals.set("fy", fy);
@@ -383,7 +384,7 @@ function fyToCalendarYear(fy) {
 }
 
 function updateFyGuidance() {
-  const fy = $("fy-select").value;
+  const fy = state.fy;
   const cy = fyToCalendarYear(fy);
   const nextCy = cy + 1;
 
@@ -397,11 +398,50 @@ function updateFyGuidance() {
     `Benefit History should be your full all-time export, not date-limited.`;
 }
 
+function initYearDropdown() {
+  const trigger = $("year-trigger");
+  const menu = $("year-menu");
+  const label = $("year-trigger-label");
+  const chevron = $("year-chevron");
+
+  const setOpen = (open) => {
+    menu.style.display = open ? "block" : "none";
+    trigger.setAttribute("aria-expanded", String(open));
+    chevron.style.transform = open ? "rotate(180deg)" : "rotate(0deg)";
+  };
+
+  trigger.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setOpen(menu.style.display === "none");
+  });
+
+  document.querySelectorAll(".year-opt").forEach((opt) => {
+    opt.addEventListener("click", () => {
+      state.fy = opt.dataset.fy;
+      label.textContent = opt.textContent;
+      document.querySelectorAll(".year-opt").forEach((o) => {
+        const selected = o === opt;
+        o.classList.toggle("is-selected", selected);
+        o.setAttribute("aria-selected", String(selected));
+      });
+      setOpen(false);
+      updateFyGuidance();
+    });
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!trigger.contains(e.target) && !menu.contains(e.target)) setOpen(false);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") setOpen(false);
+  });
+}
+
 function init() {
   initFileInputs();
+  initYearDropdown();
   $("btn-generate").addEventListener("click", generate);
   $("btn-download").addEventListener("click", downloadOutput);
-  $("fy-select").addEventListener("change", updateFyGuidance);
   updateFyGuidance();
   setPhase("idle");
 }

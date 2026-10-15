@@ -37,6 +37,28 @@
   select{ appearance:none; -webkit-appearance:none; padding-right:36px; cursor:pointer; }
   button{ font-family:var(--font-sans); }
 
+  .year-trigger{
+    display:flex; align-items:center; gap:10px; min-width:208px; background:var(--surface-2);
+    border:1px solid var(--border-strong); color:var(--text); border-radius:10px; padding:10px 12px;
+    font-size:13px; cursor:pointer; transition:border-color .18s ease, box-shadow .18s ease;
+  }
+  .year-trigger:hover{ border-color: color-mix(in srgb, var(--accent) 45%, var(--border-strong)); }
+  .year-trigger:focus-visible{ outline:none; box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent); }
+  .year-menu{
+    position:absolute; top:calc(100% + 8px); right:0; min-width:220px; background:var(--panel);
+    backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px); border:1px solid var(--border-strong);
+    border-radius:12px; padding:6px; box-shadow:0 20px 50px -20px rgba(0,0,0,.8); z-index:30;
+    animation:fadeInUp .16s ease both;
+  }
+  .year-opt{
+    display:block; width:100%; text-align:left; padding:9px 12px; border-radius:8px; border:none;
+    background:transparent; color:var(--text-muted); font-size:13px; font-family:var(--font-sans);
+    cursor:pointer; margin-top:2px; transition:background .15s ease, color .15s ease;
+  }
+  .year-opt:first-child{ margin-top:0; }
+  .year-opt:hover{ background: color-mix(in srgb, var(--accent) 14%, transparent); color:var(--text); }
+  .year-opt.is-selected{ background: color-mix(in srgb, var(--accent) 22%, transparent); color:var(--accent); font-weight:600; }
+
   .badge-pill{
     display:inline-flex; align-items:center; gap:8px; padding:7px 14px 7px 12px; border-radius:999px;
     border:1px solid var(--border-strong); background:var(--surface-2); font-size:12.5px; letter-spacing:.02em;
@@ -162,15 +184,19 @@
       </div>
       <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
         <span class="badge-pill"><span class="dot dot-success"></span>Runs 100% offline — files never leave this tab</span>
-        <label style="display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--text-muted);">
+        <div style="display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--text-muted); position:relative;">
           <span style="white-space:nowrap;">Filing year</span>
-          <select aria-label="Financial year" id="fy-select" style="min-width:208px;">
-            <option value="2023-24">FY 2023-24 &middot; AY 2024-25</option>
-            <option value="2024-25">FY 2024-25 &middot; AY 2025-26</option>
-            <option value="2025-26" selected>FY 2025-26 &middot; AY 2026-27</option>
-            <option value="2026-27">FY 2026-27 &middot; AY 2027-28</option>
-          </select>
-        </label>
+          <button type="button" class="year-trigger" id="year-trigger" aria-haspopup="listbox" aria-expanded="false">
+            <span id="year-trigger-label" style="flex:1; text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">FY 2025-26 &middot; AY 2026-27</span>
+            <svg class="icon" id="year-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px; flex:none; transition:transform .18s ease;"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <div class="year-menu" id="year-menu" role="listbox" aria-label="Filing year" style="display:none;">
+            <button type="button" class="year-opt" role="option" data-fy="2023-24">FY 2023-24 &middot; AY 2024-25</button>
+            <button type="button" class="year-opt" role="option" data-fy="2024-25">FY 2024-25 &middot; AY 2025-26</button>
+            <button type="button" class="year-opt is-selected" role="option" data-fy="2025-26" aria-selected="true">FY 2025-26 &middot; AY 2026-27</button>
+            <button type="button" class="year-opt" role="option" data-fy="2026-27">FY 2026-27 &middot; AY 2027-28</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
