@@ -96,8 +96,18 @@ class SBIRateService:
 
     def get_rule_128_rate(self, deduction_date: date) -> Tuple[date, float]:
         """
-        Rule 128(8) rate for Foreign Tax Credit (FTC):
-        Telegraphic Transfer Buying Rate of SBI on the date tax was deducted.
+        Rule 128(5)(ii) rate for Foreign Tax Credit (FTC):
+        Telegraphic Transfer Buying Rate of SBI on the last day of the month
+        immediately preceding the month in which the foreign tax was paid or deducted.
+        (Not the rate on the deduction date itself - verified against Rule 128(5)(ii) text.)
         """
-        rate = self.get_rate(deduction_date)
-        return deduction_date, rate
+        year = deduction_date.year
+        month = deduction_date.month - 1
+        if month == 0:
+            month = 12
+            year -= 1
+
+        last_day_num = monthrange(year, month)[1]
+        preceding_month_end = date(year, month, last_day_num)
+        rate = self.get_rate(preceding_month_end)
+        return preceding_month_end, rate

@@ -105,8 +105,11 @@ def sample_os_and_ftc():
             preceding_month_end=date(2025, 5, 31),
             rule_115_rate=85.10,
             gross_inr=1501,
-            rule_128_rate=85.45,
-            tax_inr=377,
+            # Rule 128(5)(ii) uses the same "last day of preceding month" date as Rule 115 when
+            # the dividend is paid and the tax is deducted on the same date, so this equals
+            # rule_115_rate here (previously a different, incorrect exact-pay-date rate).
+            rule_128_rate=85.10,
+            tax_inr=375,
             advance_tax_bucket="Upto 15-Jun-2025",
         ),
         DividendTaxResult(
@@ -138,9 +141,9 @@ def sample_os_and_ftc():
         source_of_income="Dividends",
         dtaa_article="10",
         gross_foreign_income_inr=3048,
-        foreign_tax_paid_inr=764,
+        foreign_tax_paid_inr=762,
         estimated_indian_tax_inr=951,
-        tax_relief_claimed_inr=764,
+        tax_relief_claimed_inr=762,
     )
     return os_res, ftc_res
 

@@ -157,7 +157,9 @@ class ValuationEngine:
             enriched_divs = self.ledger.allocate_dividends(cy_dividends)
             for d in enriched_divs:
                 if d.pay_date.year == calendar_year:
-                    pay_rate = self.sbi.get_rate(d.pay_date)
+                    # Rule 115: dividend income converts at the TTBR of the last day of the
+                    # month preceding the month of payment, not the TTBR on the pay date itself.
+                    _, pay_rate = self.sbi.get_rule_115_dividend_rate(d.pay_date)
                     for lot_id, alloc_usd in d.lot_allocations.items():
                         if lot_id in lot_divs_usd:
                             lot_divs_usd[lot_id] += alloc_usd
@@ -268,7 +270,8 @@ class ValuationEngine:
         for d in cy_dividends:
             if d.pay_date.year == calendar_year:
                 tot_div_usd += d.gross_amount_usd
-                pay_rate = self.sbi.get_rate(d.pay_date)
+                # Rule 115: same preceding-month-end TTBR rule as Schedule OS/Table A3.
+                _, pay_rate = self.sbi.get_rule_115_dividend_rate(d.pay_date)
                 tot_div_inr += round(d.gross_amount_usd * pay_rate)
 
         shs_divisor = max(1.0, dec_summary.shares_held)
@@ -338,7 +341,7 @@ class ValuationEngine:
             p_month_end, r115 = self.sbi.get_rule_115_dividend_rate(d.pay_date)
             gross_inr = round(d.gross_amount_usd * r115)
 
-            # Rule 128 rate on exact tax deduction date
+            # Rule 128(5)(ii): TTBR on last day of month preceding month tax was paid/deducted
             _, r128 = self.sbi.get_rule_128_rate(d.pay_date)
             tax_inr = round(d.tax_withheld_usd * r128)
 

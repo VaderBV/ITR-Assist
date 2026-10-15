@@ -179,7 +179,7 @@ class ITRWorkbookGenerator:
             ("Schedule FA - Table A2", f"Custodial Account Closing Balance (as on Dec 31, {cy})", f"${a2.closing_balance_usd:,.2f}", a2.closing_balance_inr, f"Dec 31, {cy} Value @ SBI TTBR {a2.closing_rate_inr:.2f}"),
             ("Schedule FA - Table A3", f"Total Equity Lots Declared (Active in CY {cy})", f"{len(a3_lots)} Lots", sum(l.closing_balance_inr for l in a3_lots), f"Includes {report.sold_lots_count} Sold Lot (Sold in {next_cy})"),
             ("Schedule OS", f"Gross Foreign Dividends (FY {fy})", f"${sum(i.gross_usd for i in os_res.items):,.2f}", os_res.total_dividend_inr, "Income from Other Sources (5 Installments)"),
-            ("Schedule FSI / TR", "Foreign Taxes Paid Abroad (25% US Withholding)", f"${sum(i.tax_usd for i in os_res.items):,.2f}", ftc_res.foreign_tax_paid_inr, "Rule 128(8) Conversion on Deduction Dates"),
+            ("Schedule FSI / TR", "Foreign Taxes Paid Abroad (25% US Withholding)", f"${sum(i.tax_usd for i in os_res.items):,.2f}", ftc_res.foreign_tax_paid_inr, "Rule 128(5)(ii) Preceding Month-End Conversion"),
             ("Form 67 / Schedule TR", "Foreign Tax Credit (FTC) Claimed u/s 90", f"${sum(i.tax_usd for i in os_res.items):,.2f}", ftc_res.tax_relief_claimed_inr, "DTAA Article 10 (Restricted to Indian Tax Payable)"),
         ]
 
@@ -745,7 +745,7 @@ class ITRWorkbookGenerator:
             ftc.dtaa_article,
             ftc.gross_foreign_income_usd,
             ftc.foreign_tax_paid_usd,
-            "Income @ Rule 115 Preceding Mo-End | Tax @ Rule 128(8) Deduction Date",
+            "Income @ Rule 115 Preceding Mo-End | Tax @ Rule 128(5)(ii) Preceding Mo-End",
             ftc.source_document
         ]
 
@@ -938,7 +938,10 @@ class ITRWorkbookGenerator:
         row_idx += 1
 
         checklist = [
-            "1. Filing Due Date: Form 67 must be submitted on or before the due date specified u/s 139(1) for furnishing return of income.",
+            "1. Filing Due Date: Form 67 must be furnished on or before the end of the relevant Assessment Year "
+            "(Rule 128(9), as amended by CBDT Notification No. 100/2022 dated 18-Aug-2022), provided the return "
+            "itself is filed within the time limit under Section 139(1) or 139(4). For income added via an "
+            "updated return under Section 139(8A), Form 67 must be filed by the date that updated return is furnished.",
             "2. Attachments Required: Upload Form 1042-S PDF and E*TRADE 15-Month Statement PDF as proof of foreign tax payment.",
             "3. Digital Verification: Form 67 must be verified electronically via Aadhaar OTP, EVC, or Digital Signature Certificate (DSC).",
             f"4. Portal Reconciliation: Ensure the FTC Claimed amount (₹ {ftc.tax_relief_claimed_inr:,}) matches Schedule TR and Schedule FSI identically."
@@ -1137,7 +1140,7 @@ class ITRWorkbookGenerator:
                 "Schedule FA - Table A3",
                 f"Initial Investment Cost - Lot {lot.lot_id} ({lot.net_shares} shs @ ${lot.vest_fmv_usd:.2f})",
                 lot.acquisition_date,
-                "Rule 115(2)(c) - Rate on Date of Acquisition / Vest",
+                "CBDT Schedule FA Instructions - Rate on Date of Acquisition / Vest",
                 used_d,
                 lot.acq_sbi_rate_inr,
                 lot.initial_cost_usd,
@@ -1195,7 +1198,7 @@ class ITRWorkbookGenerator:
                 "Schedule FSI & TR / Form 67",
                 f"Foreign Tax Withholding (25% IRS Tax) ({item.symbol}) - {item.advance_tax_bucket}",
                 item.pay_date,
-                "Rule 128(8) - Rate on the date of deduction of foreign tax",
+                "Rule 128(5)(ii) - Rate on last day of month preceding deduction of foreign tax",
                 used_d,
                 item.rule_128_rate,
                 item.tax_usd,

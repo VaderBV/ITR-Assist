@@ -674,7 +674,7 @@ class ITRAssistGUI:
             ("Schedule FA (A2)", "Custodial Account Closing Balance", f"${a2.closing_balance_usd:,.2f}", f"₹ {a2.closing_balance_inr:,}", f"Dec 31, {cy} @ SBI ₹{a2.closing_rate_inr:.2f} | {a2.source_closing[:40]}..."),
             ("Schedule FA (A3)", "Total Foreign Equity Closing Value", f"{len(a3_lots)} Lots", f"₹ {sum(l.closing_balance_inr for l in a3_lots):,}", "Includes Sold Lots | Initial/Peak/Close Provenance"),
             ("Schedule OS", f"Gross Foreign Dividends (FY {fy})", f"${sum(i.gross_usd for i in os_res.items):,.2f}", f"₹ {os_res.total_dividend_inr:,}", "Other Sources (5 Installments) | Preceding Month End TTBR"),
-            ("Schedule FSI / TR", "Foreign Taxes Paid Abroad (25%)", f"${sum(i.tax_usd for i in os_res.items):,.2f}", f"₹ {ftc_res.foreign_tax_paid_inr:,}", "Rule 128(8) Deduction Dates | Form 1042-S Box 7a"),
+            ("Schedule FSI / TR", "Foreign Taxes Paid Abroad (25%)", f"${sum(i.tax_usd for i in os_res.items):,.2f}", f"₹ {ftc_res.foreign_tax_paid_inr:,}", "Rule 128(5)(ii) Preceding Month-End Rate | Form 1042-S Box 7a"),
             ("Form 67 / TR", "FTC Relief Claimed u/s 90", f"${sum(i.tax_usd for i in os_res.items):,.2f}", f"₹ {ftc_res.tax_relief_claimed_inr:,}", "DTAA Article 10 | Form 1042-S Proof Attached"),
         ]
         if val_report:

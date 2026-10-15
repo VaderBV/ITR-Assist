@@ -222,7 +222,7 @@ class TestITRWorkbookGenerator(unittest.TestCase):
         self.assertAlmostEqual(ws["Q5"].value, 89.47, places=1)    # Closing Rate
         self.assertIn("(E*TRADE) Statement", ws["R5"].value)       # Source Closing
         # Gross Amount Group: Statutory Col 11 followed immediately by Working cols
-        self.assertEqual(ws["S5"].value, 8736)    # Gross Amount INR
+        self.assertEqual(ws["S5"].value, 8718)    # Gross Amount INR (Rule 115 preceding-month-end rate)
         self.assertAlmostEqual(ws["T5"].value, 100.0, places=1)    # Gross USD (Working)
         self.assertIn("(E*TRADE) CY 2025 Statement", ws["U5"].value) # Source Gross - uses the actual broker_name + the real filing calendar year
         self.assertEqual(ws["V5"].value, "D")     # Nature of Amount (Col 12)
@@ -304,16 +304,16 @@ class TestITRWorkbookGenerator(unittest.TestCase):
     def test_schedule_fsi_and_tr_content(self):
         ws_fsi = self.wb["Schedule_FSI"]
         self.assertEqual(ws_fsi["E5"].value, 6544)  # Income outside India
-        self.assertEqual(ws_fsi["F5"].value, 1643)  # Tax paid outside India
-        self.assertEqual(ws_fsi["H5"].value, 1643)  # Relief available
+        self.assertEqual(ws_fsi["F5"].value, 1636)  # Tax paid outside India (Rule 128(5)(ii) preceding-month-end rate)
+        self.assertEqual(ws_fsi["H5"].value, 1636)  # Relief available
         self.assertEqual(ws_fsi["I5"].value, "Article 10")
         self.assertAlmostEqual(ws_fsi["J5"].value, 75.0, places=1)  # Income USD
         self.assertAlmostEqual(ws_fsi["K5"].value, 18.75, places=1) # Tax USD
         self.assertIn("Form 1042-S", ws_fsi["M5"].value)
 
         ws_tr = self.wb["Schedule_TR"]
-        self.assertEqual(ws_tr["D5"].value, 1643)  # Total tax paid
-        self.assertEqual(ws_tr["E5"].value, 1643)  # Relief available
+        self.assertEqual(ws_tr["D5"].value, 1636)  # Total tax paid
+        self.assertEqual(ws_tr["E5"].value, 1636)  # Relief available
         self.assertEqual(ws_tr["F5"].value, "90")
         self.assertAlmostEqual(ws_tr["G5"].value, 18.75, places=1)  # Tax USD
         self.assertIn("Form 1042-S", ws_tr["I5"].value)
