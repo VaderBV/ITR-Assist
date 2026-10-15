@@ -76,15 +76,11 @@ class SBIRateService:
         # Fallback to earliest available rate
         return self._rates[self._sorted_dates[0]]
 
-    def get_rule_115_dividend_rate(self, dividend_date: date) -> Tuple[date, float]:
-        """
-        Rule 115(1) rate for dividend income:
-        Telegraphic Transfer Buying Rate of SBI on the last day of the month
-        immediately preceding the month in which dividend is declared/paid.
-        """
-        # Determine preceding month
-        year = dividend_date.year
-        month = dividend_date.month - 1
+    def _preceding_month_end_rate(self, event_date: date) -> Tuple[date, float]:
+        """Shared mechanism behind Rule 115's Explanation clauses (e), (f) and Rule 128(5)(ii):
+        TTBR on the last day of the month immediately preceding the month of event_date."""
+        year = event_date.year
+        month = event_date.month - 1
         if month == 0:
             month = 12
             year -= 1
@@ -93,6 +89,24 @@ class SBIRateService:
         preceding_month_end = date(year, month, last_day_num)
         rate = self.get_rate(preceding_month_end)
         return preceding_month_end, rate
+
+    def get_rule_115_dividend_rate(self, dividend_date: date) -> Tuple[date, float]:
+        """
+        Explanation to Rule 115, clause (e) - foreign dividend income:
+        Telegraphic Transfer Buying Rate of SBI on the last day of the month
+        immediately preceding the month in which the dividend is declared, distributed, or paid.
+        """
+        return self._preceding_month_end_rate(dividend_date)
+
+    def get_rule_115_capital_gains_rate(self, transfer_date: date) -> Tuple[date, float]:
+        """
+        Explanation to Rule 115, clause (f) - capital gains on transfer of a foreign asset:
+        Telegraphic Transfer Buying Rate of SBI on the last day of the month immediately
+        preceding the month of transfer (sale). The same rate/date also applies to the cost of
+        acquisition side when the asset was purchased in foreign currency. Verified against the
+        official Rule 115 text (incometaxindia.gov.in) - NOT the rate on the transfer date itself.
+        """
+        return self._preceding_month_end_rate(transfer_date)
 
     def get_rule_128_rate(self, deduction_date: date) -> Tuple[date, float]:
         """
@@ -101,13 +115,4 @@ class SBIRateService:
         immediately preceding the month in which the foreign tax was paid or deducted.
         (Not the rate on the deduction date itself - verified against Rule 128(5)(ii) text.)
         """
-        year = deduction_date.year
-        month = deduction_date.month - 1
-        if month == 0:
-            month = 12
-            year -= 1
-
-        last_day_num = monthrange(year, month)[1]
-        preceding_month_end = date(year, month, last_day_num)
-        rate = self.get_rate(preceding_month_end)
-        return preceding_month_end, rate
+        return self._preceding_month_end_rate(deduction_date)

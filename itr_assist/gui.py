@@ -536,10 +536,10 @@ class ITRAssistGUI:
             self._log(f"      • Current Holdings: Ingested {len(holdings_lots)} active snapshot lots")
 
             primary_symbol = all_lots[0].symbol if all_lots else None
-            summaries, dividends = adapter.parse_statements(
+            summaries, dividends, sales = adapter.parse_statements(
                 [stmt_cy_file, stmt_fy_end_file], symbol_hint=primary_symbol, calendar_year_hint=cy
             )
-            self._log(f"      • Statements: Extracted {len(summaries)} period summaries & {len(dividends)} dividends")
+            self._log(f"      • Statements: Extracted {len(summaries)} period summaries, {len(dividends)} dividends & {len(sales)} sale transactions")
 
             form_1042s = adapter.parse_tax_documents(tax_doc, calendar_year_hint=cy)
             self._log(f"      • Form 1042-S: Verified Gross ${form_1042s.gross_dividend_usd:.2f}, Tax ${form_1042s.tax_withheld_usd:.2f}")
@@ -555,6 +555,10 @@ class ITRAssistGUI:
             # 2. Reconcile
             self._log("\n[2/5] Reconciling chronological lot ledger & sold lots...")
             ledger = LotLedger(all_lots)
+            # Must run before verify_holdings()/get_schedule_fa_lots(): mutates the ledger's
+            # lots (splitting partially-sold lots, setting disposal dates) so every later step
+            # sees the correct post-sale state.
+            enriched_sales = ledger.allocate_sales(sales)
             verifier = DocumentVerifier(ledger, holdings_lots)
             report = verifier.verify_holdings()
 
@@ -591,7 +595,7 @@ class ITRAssistGUI:
             )
             dec_summary = next(s for s in summaries if s.end_date == date(cy, 12, 31))
             a2_res = engine.compute_table_a2(cy, dec_summary, dividends)
-            a3_res = engine.compute_table_a3(cy, dividends)
+            a3_res = engine.compute_table_a3(cy, dividends, enriched_sales)
 
             fy_divs = [d for d in dividends if date(cy, 4, 1) <= d.pay_date <= date(next_cy, 3, 31)]
             os_res, ftc_res = engine.compute_schedule_os_and_ftc(fy_divs, calendar_year=cy)

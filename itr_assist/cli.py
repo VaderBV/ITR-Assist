@@ -97,10 +97,10 @@ def main() -> int:
     print(f"      • Current Holdings: Ingested {len(holdings_lots)} active snapshot lots")
 
     primary_symbol = all_lots[0].symbol if all_lots else None
-    statement_summaries, dividends = adapter.parse_statements(
+    statement_summaries, dividends, sales = adapter.parse_statements(
         [stmt_cy_file, stmt_fy_end_file], symbol_hint=primary_symbol, calendar_year_hint=cy
     )
-    print(f"      • Client Statements: Extracted {len(statement_summaries)} period summaries & {len(dividends)} dividends")
+    print(f"      • Client Statements: Extracted {len(statement_summaries)} period summaries, {len(dividends)} dividends & {len(sales)} sale transactions")
 
     form_1042s = adapter.parse_tax_documents(tax_doc, calendar_year_hint=cy)
     print(f"      • Form 1042-S: Verified Gross ${form_1042s.gross_dividend_usd:.2f}, Tax ${form_1042s.tax_withheld_usd:.2f}")
@@ -112,6 +112,10 @@ def main() -> int:
     # 2. Reconstruct Chronological Lot Ledger
     print("\n[2/5] Reconstructing chronological lot lifecycle & sold lots...")
     ledger = LotLedger(all_lots)
+    # Must run before verify_holdings()/get_schedule_fa_lots(): this mutates the ledger's lots
+    # (splitting partially-sold lots, setting disposal dates) so every later step sees the
+    # correct post-sale state instead of treating a sold lot as still fully held.
+    enriched_sales = ledger.allocate_sales(sales)
     verifier = DocumentVerifier(ledger, holdings_lots)
     report = verifier.verify_holdings()
 
@@ -166,7 +170,7 @@ def main() -> int:
 
     dec_summary = next(s for s in statement_summaries if s.end_date == date(cy, 12, 31))
     a2_res = engine.compute_table_a2(cy, dec_summary, dividends)
-    a3_res = engine.compute_table_a3(cy, dividends)
+    a3_res = engine.compute_table_a3(cy, dividends, enriched_sales)
 
     fy_divs = [d for d in dividends if date(cy, 4, 1) <= d.pay_date <= date(next_cy, 3, 31)]
     os_res, ftc_res = engine.compute_schedule_os_and_ftc(fy_divs, calendar_year=cy)

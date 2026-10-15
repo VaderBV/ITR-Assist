@@ -28,6 +28,10 @@ class SaleEvent:
     matched_lot_id: Optional[str] = None
     cost_basis_usd: Optional[float] = None
     gain_loss_usd: Optional[float] = None
+    # FIFO allocation of this sale's quantity/proceeds across one or more lots, populated by
+    # LotLedger.allocate_sales(). A single sell order can close out more than one vest/purchase
+    # lot (e.g. selling 20 shares when lot A has 12 remaining and lot B has 20).
+    lot_allocations: Dict[str, float] = field(default_factory=dict)
 
 
 @dataclass

@@ -132,7 +132,7 @@ class TestDocumentParsers(unittest.TestCase):
         # header of its own, so the parser falls back to calendar_year_hint - exactly what this
         # fixture's year (2025) is for. Without a hint, it would fall back to today's year,
         # which is why this must be passed explicitly rather than relying on an implicit default.
-        summaries, dividends = parser.parse(["dummy_stmt.pdf"], calendar_year_hint=2025)
+        summaries, dividends, sales = parser.parse(["dummy_stmt.pdf"], calendar_year_hint=2025)
 
         self.assertEqual(len(summaries), 1)
         self.assertEqual(summaries[0].beginning_value_usd, 2400.0)
@@ -146,6 +146,37 @@ class TestDocumentParsers(unittest.TestCase):
         self.assertEqual(dividends[0].gross_amount_usd, 25.0)
         self.assertEqual(dividends[0].tax_withheld_usd, 6.25)
         self.assertEqual(dividends[0].symbol, "ACME CORPORATION")
+
+    @patch("itr_assist.parsers.etrade.statements.PdfReader")
+    def test_parse_statements_pdf_sale_transaction(self, mock_pdf_reader):
+        """Test extraction of a sell transaction line.
+
+        IMPORTANT CAVEAT: the sell-line regex in statements.py is a best-effort pattern
+        modelled on the already-proven dividend-line pattern - it has NOT been validated
+        against a real E*TRADE statement's actual "Account Activity" sell-line wording
+        (no real sample was available to build against). This test only proves the parser
+        correctly extracts data from the wording it currently expects; it does NOT prove that
+        wording matches a real statement. If real sales aren't picked up, start by comparing
+        the actual statement text against the pattern in statements.py.
+        """
+        page_text = (
+            "CLIENT STATEMENT For the Period June 1-30, 2025 Page 1\n"
+            "Activity Summary\n"
+            "06/10 Sold 4.000 shs ACME CORPORATION @ $120.00 $480.00\n"
+        )
+        p1 = MagicMock()
+        p1.extract_text.return_value = page_text
+        mock_pdf_reader.return_value.pages = [p1]
+
+        parser = ETradeStatementParser()
+        _, _, sales = parser.parse(["dummy_stmt.pdf"], calendar_year_hint=2025)
+
+        self.assertEqual(len(sales), 1)
+        self.assertEqual(sales[0].sale_date, date(2025, 6, 10))
+        self.assertEqual(sales[0].quantity, 4.0)
+        self.assertEqual(sales[0].price_usd, 120.0)
+        self.assertEqual(sales[0].gross_proceeds_usd, 480.0)
+        self.assertEqual(sales[0].symbol, "ACME CORPORATION")
 
     @patch("pandas.read_excel")
     def test_parse_benefit_history_excel(self, mock_read_excel):

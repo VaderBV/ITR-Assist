@@ -4,7 +4,7 @@ import re
 from typing import Dict, List, Optional, Tuple
 from pypdf import PdfReader
 
-from itr_assist.models import DividendEvent, StatementPeriodSummary
+from itr_assist.models import DividendEvent, SaleEvent, StatementPeriodSummary
 from itr_assist.parsers.base import BaseStatementParser
 
 
@@ -24,8 +24,8 @@ class ETradeStatementParser(BaseStatementParser):
         file_paths: List[str],
         symbol_hint: Optional[str] = None,
         calendar_year_hint: Optional[int] = None,
-    ) -> Tuple[List[StatementPeriodSummary], List[DividendEvent]]:
-        """Extract all period summaries and dividend events from E*TRADE statement files.
+    ) -> Tuple[List[StatementPeriodSummary], List[DividendEvent], List[SaleEvent]]:
+        """Extract all period summaries, dividend events, and sale events from E*TRADE statement files.
 
         calendar_year_hint (the user-selected CY, e.g. 2025 for FY 2025-26) is only a last-resort
         fallback for the rare page where the statement's own header text can't be matched by the
@@ -33,8 +33,10 @@ class ETradeStatementParser(BaseStatementParser):
         """
         summaries: List[StatementPeriodSummary] = []
         dividends: List[DividendEvent] = []
+        sales: List[SaleEvent] = []
 
         seen_div_keys = set()
+        seen_sale_keys = set()
         seen_period_keys = set()
         fallback_year = calendar_year_hint if calendar_year_hint is not None else date.today().year
 
@@ -121,9 +123,44 @@ class ETradeStatementParser(BaseStatementParser):
                             tax_withheld_usd=tax_amt
                         ))
 
+                # Extract Sale/Sell transaction line items.
+                # NOTE: this pattern is a best-effort guess at common E*TRADE statement wording
+                # ("Sold"/"Sale"/"Sell" + qty + "shs"/"shares" + symbol + $ proceeds), built by
+                # mirroring the already-proven dividend-line pattern above. It has NOT been
+                # validated against a real E*TRADE "Account Activity" sell line - if a real
+                # statement's sales aren't being picked up, this regex is the first place to
+                # check and adjust against the actual wording.
+                for m in re.finditer(
+                    r'(\d{1,2}/\d{1,2})\s+(?:Sold|Sale|Sell)\s+([\d,]+\.\d+)\s+shs?\.?\s*(?:of\s+)?([A-Z][A-Z\s]*?)\s*(?:@|at)?\s*\$([\d,]+\.\d+)\D*?\$([\d,]+\.\d+)',
+                    txt,
+                ):
+                    date_part, qty_str, sym, price_str, proceeds_str = m.groups()
+                    qty = float(qty_str.replace(',', ''))
+                    proceeds = float(proceeds_str.replace(',', ''))
+                    price = float(price_str.replace(',', ''))
+
+                    m_num, d_num = map(int, date_part.split('/'))
+                    sale_year = page_year
+                    if page_year == fallback_year + 1 and m_num > 3:
+                        sale_year = fallback_year
+                    sale_date = date(sale_year, m_num, d_num)
+
+                    sale_key = (sale_date, sym.strip(), qty, proceeds)
+                    if sale_key not in seen_sale_keys:
+                        seen_sale_keys.add(sale_key)
+                        sale_symbol = symbol_hint if symbol_hint else sym.strip()
+                        sales.append(SaleEvent(
+                            sale_date=sale_date,
+                            symbol=sale_symbol,
+                            quantity=qty,
+                            price_usd=price,
+                            gross_proceeds_usd=proceeds,
+                        ))
+
         summaries.sort(key=lambda x: x.start_date)
         dividends.sort(key=lambda x: x.pay_date)
-        return summaries, dividends
+        sales.sort(key=lambda x: x.sale_date)
+        return summaries, dividends, sales
 
     def _parse_period_dates(self, period_str: str, default_year: int) -> Tuple[date, date]:
         """Parse period string like 'December 1-31, 2025' or 'January 1- February 28, 2025'."""

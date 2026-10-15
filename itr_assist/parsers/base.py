@@ -2,7 +2,7 @@
 from abc import ABC, abstractmethod
 from typing import List, Optional, Tuple
 
-from itr_assist.models import DividendEvent, Form1042SData, ShareLot, StatementPeriodSummary
+from itr_assist.models import DividendEvent, Form1042SData, SaleEvent, ShareLot, StatementPeriodSummary
 
 
 class BaseBenefitHistoryParser(ABC):
@@ -32,8 +32,9 @@ class BaseStatementParser(ABC):
         file_paths: List[str],
         symbol_hint: Optional[str] = None,
         calendar_year_hint: Optional[int] = None,
-    ) -> Tuple[List[StatementPeriodSummary], List[DividendEvent]]:
-        """Parse account statement files and return period summaries and dividend events.
+    ) -> Tuple[List[StatementPeriodSummary], List[DividendEvent], List[SaleEvent]]:
+        """Parse account statement files and return period summaries, dividend events, and
+        sale/sell transaction events.
 
         calendar_year_hint is the user-selected calendar year (first year of the FY being
         filed). It is used only as a last-resort fallback when a statement's own text does not
@@ -83,8 +84,8 @@ class BaseBrokerAdapter(ABC):
         file_paths: List[str],
         symbol_hint: Optional[str] = None,
         calendar_year_hint: Optional[int] = None,
-    ) -> Tuple[List[StatementPeriodSummary], List[DividendEvent]]:
-        """Extract periodic statement summaries and dividend transactions."""
+    ) -> Tuple[List[StatementPeriodSummary], List[DividendEvent], List[SaleEvent]]:
+        """Extract periodic statement summaries, dividend transactions, and sale transactions."""
         pass
 
     @abstractmethod

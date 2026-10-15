@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
-from itr_assist.models import DividendEvent, ShareLot, StatementPeriodSummary
+from itr_assist.models import DividendEvent, SaleEvent, ShareLot, StatementPeriodSummary
 from itr_assist.reconciliation.lot_ledger import LotLedger
 from itr_assist.services.market_data import MarketDataService
 from itr_assist.services.sbi_rates import SBIRateService
@@ -70,6 +70,8 @@ class ScheduleFATableA3LotResult:
     source_peak: str = "Yahoo Finance Daily Stock Price & SBI TTBR Card"
     source_closing: str = "Yahoo Finance Stock Dec 31 Close & SBI TTBR Card"
     source_dividends: str = "Client Statements Account Activity"
+    gross_proceeds_usd: float = 0.0
+    source_proceeds: str = ""
 
 
 @dataclass
@@ -144,8 +146,32 @@ class ValuationEngine:
         self.account_number = account_number
         self.account_open_date = account_open_date
 
-    def compute_table_a3(self, calendar_year: int, cy_dividends: Optional[List[DividendEvent]] = None) -> List[ScheduleFATableA3LotResult]:
-        """Compute Schedule FA Table A3 row details for each lot active in calendar_year."""
+    def compute_table_a3(
+        self,
+        calendar_year: int,
+        cy_dividends: Optional[List[DividendEvent]] = None,
+        cy_sales: Optional[List[SaleEvent]] = None,
+    ) -> List[ScheduleFATableA3LotResult]:
+        """Compute Schedule FA Table A3 row details for each lot active in calendar_year.
+
+        cy_sales must already be ENRICHED (i.e. the List[SaleEvent] returned by
+        self.ledger.allocate_sales(), with .lot_allocations populated) - the caller must call
+        allocate_sales() itself, once, before building the reconciliation report too, since it
+        mutates the ledger's lots (splitting partially-sold lots, setting disposal dates) and
+        that mutation needs to happen before ANY other step reads the ledger's lot state.
+        """
+        lot_proceeds_usd: Dict[str, float] = {}
+        lot_proceeds_inr: Dict[str, int] = {}
+        if cy_sales:
+            for s in cy_sales:
+                if s.sale_date.year == calendar_year:
+                    # Explanation to Rule 115, clause (f): capital gains/sale proceeds convert
+                    # at the TTBR of the last day of the month preceding the month of transfer.
+                    _, sale_rate = self.sbi.get_rule_115_capital_gains_rate(s.sale_date)
+                    for lot_id, proceeds_usd in s.lot_allocations.items():
+                        lot_proceeds_usd[lot_id] = lot_proceeds_usd.get(lot_id, 0.0) + proceeds_usd
+                        lot_proceeds_inr[lot_id] = lot_proceeds_inr.get(lot_id, 0) + round(proceeds_usd * sale_rate)
+
         fa_lots = self.ledger.get_schedule_fa_lots(calendar_year)
         results: List[ScheduleFATableA3LotResult] = []
 
@@ -183,6 +209,10 @@ class ValuationEngine:
             src_peak = f"Yahoo Finance {lot.symbol} Close (${peak_info['peak_price_usd']:.2f} on {peak_info['peak_date'].strftime('%Y-%m-%d')}) & SBI TTBR ₹{peak_info['peak_rate_inr']:.2f}"
             src_close = f"Yahoo Finance {lot.symbol} Close (${close_info['closing_price_usd']:.2f} on {close_info['closing_date'].strftime('%Y-%m-%d')}) & SBI TTBR ₹{close_info['closing_rate_inr']:.2f}"
             src_div = f"Client Statements Account Activity (Dividends pro-rata)"
+            src_proceeds = (
+                f"Client Statements Account Activity (Sale proceeds, Rule 115 cl.(f) preceding-month-end rate)"
+                if lot.lot_id in lot_proceeds_inr else ""
+            )
 
             res = ScheduleFATableA3LotResult(
                 lot_id=lot.lot_id,
@@ -208,7 +238,8 @@ class ValuationEngine:
                 closing_rate_inr=close_info["closing_rate_inr"],
                 gross_dividends_usd=round(lot_divs_usd.get(lot.lot_id, 0.0), 2),
                 gross_dividends_inr=lot_divs_inr.get(lot.lot_id, 0),
-                gross_proceeds_inr=0,
+                gross_proceeds_inr=lot_proceeds_inr.get(lot.lot_id, 0),
+                gross_proceeds_usd=round(lot_proceeds_usd.get(lot.lot_id, 0.0), 2),
                 is_sold_lot=lot.is_sold_lot,
                 disposal_date=lot.disposal_date,
                 initial_cost_usd=init_cost_usd,
@@ -217,7 +248,8 @@ class ValuationEngine:
                 source_acquisition=src_acq,
                 source_peak=src_peak,
                 source_closing=src_close,
-                source_dividends=src_div
+                source_dividends=src_div,
+                source_proceeds=src_proceeds
             )
             results.append(res)
 

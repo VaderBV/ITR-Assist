@@ -1,7 +1,7 @@
 """Fidelity Broker Adapter skeleton for future extension."""
 from typing import List, Optional, Tuple
 
-from itr_assist.models import DividendEvent, Form1042SData, ShareLot, StatementPeriodSummary
+from itr_assist.models import DividendEvent, Form1042SData, SaleEvent, ShareLot, StatementPeriodSummary
 from itr_assist.parsers.base import BaseBrokerAdapter
 
 
@@ -28,7 +28,7 @@ class FidelityAdapter(BaseBrokerAdapter):
         file_paths: List[str],
         symbol_hint: Optional[str] = None,
         calendar_year_hint: Optional[int] = None,
-    ) -> Tuple[List[StatementPeriodSummary], List[DividendEvent]]:
+    ) -> Tuple[List[StatementPeriodSummary], List[DividendEvent], List[SaleEvent]]:
         """Parse Fidelity periodic brokerage statements."""
         raise NotImplementedError("Fidelity statement parsing will be implemented with Fidelity sample data.")
 
