@@ -168,6 +168,7 @@ def test_gui_generation_success_callback(gui_app: ITRAssistGUI):
             gross_dividends_inr=956,
             gross_proceeds_inr=0,
             is_sold_lot=True,
+            disposal_date=date(2025, 8, 20),
             initial_cost_usd=590.22,
             peak_balance_usd=544.08,
             closing_balance_usd=444.72,
@@ -231,7 +232,7 @@ def test_gui_generation_success_callback(gui_app: ITRAssistGUI):
     # Check sold lot label in A3 Tree (last column 15)
     a3_values = gui_app.a3_tree.item(gui_app.a3_tree.get_children()[0])["values"]
     assert "ACME-ESPP-20240603" in str(a3_values[0])
-    assert "YES (Sold 2026)" in str(a3_values[15])
+    assert "YES (Sold 2025)" in str(a3_values[15])  # real disposal_date (2025-08-20) year, not a hardcoded guess
 
 
 def test_gui_generation_error_callback(gui_app: ITRAssistGUI):

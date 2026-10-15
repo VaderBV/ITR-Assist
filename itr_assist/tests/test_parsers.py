@@ -128,7 +128,11 @@ class TestDocumentParsers(unittest.TestCase):
         mock_pdf_reader.return_value.pages = [p1, p2]
 
         parser = ETradeStatementParser()
-        summaries, dividends = parser.parse(["dummy_stmt.pdf"])
+        # page2_text (the dividend activity page) has no "CLIENT STATEMENT ... For the Period"
+        # header of its own, so the parser falls back to calendar_year_hint - exactly what this
+        # fixture's year (2025) is for. Without a hint, it would fall back to today's year,
+        # which is why this must be passed explicitly rather than relying on an implicit default.
+        summaries, dividends = parser.parse(["dummy_stmt.pdf"], calendar_year_hint=2025)
 
         self.assertEqual(len(summaries), 1)
         self.assertEqual(summaries[0].beginning_value_usd, 2400.0)
