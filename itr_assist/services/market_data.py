@@ -32,7 +32,13 @@ class MarketDataService:
 
         cache_path = self._get_cache_path(symbol)
         if not os.path.exists(cache_path) and self.auto_download:
-            self._fetch_and_cache(symbol)
+            try:
+                self._fetch_and_cache(symbol)
+            except Exception:
+                # Mirrors SBIRateService._ensure_cache: if the network is unavailable, blocked,
+                # or Yahoo Finance errors, fall through to the cache-missing check below instead
+                # of letting a raw network exception crash the whole generation pipeline.
+                pass
 
         if not os.path.exists(cache_path):
             raise FileNotFoundError(f"Market data cache for {symbol} not found at {cache_path}")

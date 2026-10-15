@@ -95,8 +95,10 @@ class ETradeStatementParser(BaseStatementParser):
                                 shares_held=shs_held
                             ))
 
-                # Extract Dividend line items
-                for m in re.finditer(r'(\d{1,2}/\d{1,2})\s+Qualified Dividend\s+([A-Z\s]+?)\s+\$([\d,]+\.\d+)', txt):
+                # Extract Dividend line items. The $ sign on the Credits amount is present on
+                # some statements (monthly) and absent on others (quarterly) - confirmed on two
+                # real statements for the same account - so it must be optional here.
+                for m in re.finditer(r'(\d{1,2}/\d{1,2})\s+Qualified Dividend\s+([A-Z\s]+?)\s+\$?([\d,]+\.\d+)', txt):
                     date_part, sym, amt_str = m.groups()
                     amt = float(amt_str.replace(',', ''))
 
@@ -123,21 +125,35 @@ class ETradeStatementParser(BaseStatementParser):
                             tax_withheld_usd=tax_amt
                         ))
 
-                # Extract Sale/Sell transaction line items.
-                # NOTE: this pattern is a best-effort guess at common E*TRADE statement wording
-                # ("Sold"/"Sale"/"Sell" + qty + "shs"/"shares" + symbol + $ proceeds), built by
-                # mirroring the already-proven dividend-line pattern above. It has NOT been
-                # validated against a real E*TRADE "Account Activity" sell line - if a real
-                # statement's sales aren't being picked up, this regex is the first place to
-                # check and adjust against the actual wording.
+                # Extract Sale/Sell transaction line items from the "CASH FLOW ACTIVITY BY DATE"
+                # table. Verified against two real Morgan Stanley/E*TRADE statements (not a
+                # guess): a sold row's raw extracted text looks like
+                #   "10/27 10/28 Sold QUALCOMM INC ACTED AS AGENT\nUNSOLICITED TRADE\n9.000 $190.0000 $1,705.05"
+                # i.e. activity date, settlement date, "Sold", a description/comments block that
+                # can wrap onto its own line(s), then quantity/price/credits on a later line. The
+                # description text is in the same all-caps style as the comments that can follow
+                # it (e.g. "ACTED AS AGENT"), so it is NOT reliably extractable by itself - the
+                # symbol comes from symbol_hint instead, same fallback already used for dividends.
+                # The statement's "Credits" column is the NET amount (after commission/fees, e.g.
+                # $1,705.05 for a $1,710.00 gross sale) - confirmed against the matching Trade
+                # Confirmation document, which showed Principal (gross) separately from Net
+                # Amount. Gross proceeds for Schedule FA/capital-gains purposes must be the GROSS
+                # sale consideration, so it's computed here as quantity * price, not read from
+                # the Credits column.
                 for m in re.finditer(
-                    r'(\d{1,2}/\d{1,2})\s+(?:Sold|Sale|Sell)\s+([\d,]+\.\d+)\s+shs?\.?\s*(?:of\s+)?([A-Z][A-Z\s]*?)\s*(?:@|at)?\s*\$([\d,]+\.\d+)\D*?\$([\d,]+\.\d+)',
+                    r'(\d{1,2}/\d{1,2})\s+\d{1,2}/\d{1,2}\s+Sold\b[\s\S]{0,200}?([\d,]+\.\d+)\s+\$?([\d,]+\.\d+)\s+\$?([\d,]+\.\d+)',
                     txt,
                 ):
-                    date_part, qty_str, sym, price_str, proceeds_str = m.groups()
+                    date_part, qty_str, price_str, credits_str = m.groups()
                     qty = float(qty_str.replace(',', ''))
-                    proceeds = float(proceeds_str.replace(',', ''))
                     price = float(price_str.replace(',', ''))
+                    credits_net = float(credits_str.replace(',', ''))
+                    gross_proceeds = round(qty * price, 2)
+                    # Sanity check: the net credit should be close to (but not exceed) the gross
+                    # value - if it's wildly different, this likely matched the wrong numbers
+                    # (e.g. a different table entirely), so skip it rather than record garbage.
+                    if credits_net <= 0 or credits_net > gross_proceeds * 1.05:
+                        continue
 
                     m_num, d_num = map(int, date_part.split('/'))
                     sale_year = page_year
@@ -145,16 +161,16 @@ class ETradeStatementParser(BaseStatementParser):
                         sale_year = fallback_year
                     sale_date = date(sale_year, m_num, d_num)
 
-                    sale_key = (sale_date, sym.strip(), qty, proceeds)
+                    sale_symbol = symbol_hint if symbol_hint else "STOCK"
+                    sale_key = (sale_date, sale_symbol, qty, gross_proceeds)
                     if sale_key not in seen_sale_keys:
                         seen_sale_keys.add(sale_key)
-                        sale_symbol = symbol_hint if symbol_hint else sym.strip()
                         sales.append(SaleEvent(
                             sale_date=sale_date,
                             symbol=sale_symbol,
                             quantity=qty,
                             price_usd=price,
-                            gross_proceeds_usd=proceeds,
+                            gross_proceeds_usd=gross_proceeds,
                         ))
 
         summaries.sort(key=lambda x: x.start_date)

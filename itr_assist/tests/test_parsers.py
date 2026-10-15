@@ -151,32 +151,35 @@ class TestDocumentParsers(unittest.TestCase):
     def test_parse_statements_pdf_sale_transaction(self, mock_pdf_reader):
         """Test extraction of a sell transaction line.
 
-        IMPORTANT CAVEAT: the sell-line regex in statements.py is a best-effort pattern
-        modelled on the already-proven dividend-line pattern - it has NOT been validated
-        against a real E*TRADE statement's actual "Account Activity" sell-line wording
-        (no real sample was available to build against). This test only proves the parser
-        correctly extracts data from the wording it currently expects; it does NOT prove that
-        wording matches a real statement. If real sales aren't picked up, start by comparing
-        the actual statement text against the pattern in statements.py.
+        This wording is copied verbatim (symbol/dates/amounts changed) from the real raw
+        pypdf text of an actual Morgan Stanley/E*TRADE "CASH FLOW ACTIVITY BY DATE" table -
+        confirmed against two real statements for two real sales, cross-checked against each
+        sale's separate Trade Confirmation document. The sold row's description/comments can
+        wrap onto their own line(s) before the quantity/price/credits line, and the $ sign on
+        those numbers is present on some statements and absent on others (both real).
         """
         page_text = (
             "CLIENT STATEMENT For the Period June 1-30, 2025 Page 1\n"
-            "Activity Summary\n"
-            "06/10 Sold 4.000 shs ACME CORPORATION @ $120.00 $480.00\n"
+            "ACTIVITY\n"
+            "CASH FLOW ACTIVITY BY DATE\n"
+            "Activity\nDate\nSettlement\nDate Activity Type Description Comments Quantity Price Credits/(Debits)\n"
+            "6/10 6/11 Sold ACME CORPORATION ACTED AS AGENT\nUNSOLICITED TRADE\n4.000 120.0000 478.20\n"
         )
         p1 = MagicMock()
         p1.extract_text.return_value = page_text
         mock_pdf_reader.return_value.pages = [p1]
 
         parser = ETradeStatementParser()
-        _, _, sales = parser.parse(["dummy_stmt.pdf"], calendar_year_hint=2025)
+        _, _, sales = parser.parse(["dummy_stmt.pdf"], symbol_hint="ACME", calendar_year_hint=2025)
 
         self.assertEqual(len(sales), 1)
         self.assertEqual(sales[0].sale_date, date(2025, 6, 10))
         self.assertEqual(sales[0].quantity, 4.0)
         self.assertEqual(sales[0].price_usd, 120.0)
+        # Gross = quantity * price (480.00), NOT the statement's net-of-commission
+        # Credits/(Debits) figure (478.20) - confirmed against a real Trade Confirmation.
         self.assertEqual(sales[0].gross_proceeds_usd, 480.0)
-        self.assertEqual(sales[0].symbol, "ACME CORPORATION")
+        self.assertEqual(sales[0].symbol, "ACME")
 
     @patch("pandas.read_excel")
     def test_parse_benefit_history_excel(self, mock_read_excel):
