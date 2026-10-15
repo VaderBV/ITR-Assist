@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "itr-assist"
+version = "1.0.0"
+description = "Automated statutory assistant for Indian Income Tax Return (ITR-2) Foreign Assets (Schedule FA, OS, FSI, TR, Form 67)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "ITR Assist Contributors" }
+]
+keywords = [
+    "itr",
+    "itr-2",
+    "schedule-fa",
+    "income-tax",
+    "espp",
+    "rsu",
+    "foreign-assets",
+    "black-money-act",
+    "form-67",
+    "dtaa",
+    "rule-115",
+    "rule-128"
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Accounting",
+]
+dependencies = [
+    "openpyxl>=3.1.2",
+    "pandas>=2.1.0",
+    "pypdf>=3.17.0",
+    "requests>=2.31.0",
+    "jsonschema>=4.20.0",
+    "referencing>=0.30.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "reportlab>=4.0.0",
+]
+
+[project.scripts]
+itr-assist = "itr_assist.cli:main"
+itr-assist-gui = "itr_assist.gui:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["itr_assist*"]
+
+[tool.setuptools.package-data]
+itr_assist = ["*.json", "*.pdf"]
+
+[tool.pytest.ini_options]
+testpaths = ["itr_assist/tests"]
+python_files = ["test_*.py"]

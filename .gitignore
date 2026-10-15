@@ -1,0 +1,46 @@
+# ==============================================================================
+# ITR-2 Foreign Assets Automation Tool - .gitignore
+# Ensures strict data privacy: Zero financial documents or PII committed
+# ==============================================================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+
+# User Private Financial Statements & Broker Documents (STRICT PRIVACY)
+[Dd]ata/*
+![Dd]ata/cache/
+[Dd]ata/cache/*
+![Dd]ata/cache/SBI_REFERENCE_RATES_USD.csv
+
+# Output Workbooks & Temporary Office Lock Files
+ITR2_*.xlsx
+~$*.xlsx
+*.xlsx
+scratch/
+
+# IDE & OS-Specific Files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
