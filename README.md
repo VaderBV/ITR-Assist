@@ -69,6 +69,12 @@ window.ITR_ASSIST_MARKET_API_KEY = "your-key-here";
 
 **How the peak is checked:** the Table A2 peak uses the account's real cash for each day, rebuilt from your statements' own cash activity. It is only trusted if cash + shares &times; closing price reproduces the total printed on every statement of the year; otherwise the scorecard says *Peak not verified* and why.
 
+**Known limits** (check these before filing):
+- Built for one listed ticker per account (an employer-RSU account). Sales and dividends are matched to the ticker found in the Benefit History file; shares of another ticker would make the peak check report *Peak not verified*.
+- The *Peak not verified* result is a warning on the scorecard and does not block the download; missing statements and missing details do.
+- Sale proceeds in Table A2 (row S) and Table A3 are the gross amount (quantity &times; price, before commission) converted at the preceding-month-end SBI rate (Rule 115, clause f). Confirm the rate date for the proceeds column against the current ITR-2 instructions.
+- Table A2 closing and peak are the whole account value (cash and shares); the shares are also listed in Table A3.
+
 #### GitHub Pages deployment
 
 The repository includes `.github/workflows/pages.yml`, which publishes the contents of `web/` whenever a change to the site reaches `main`. In the repository settings, select **Settings → Pages → Source → GitHub Actions** once; subsequent deployments are automatic. The workflow can also be run manually from the Actions tab.
