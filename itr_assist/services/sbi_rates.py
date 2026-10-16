@@ -102,9 +102,16 @@ class SBIRateService:
         """
         Explanation to Rule 115, clause (f) - capital gains on transfer of a foreign asset:
         Telegraphic Transfer Buying Rate of SBI on the last day of the month immediately
-        preceding the month of transfer (sale). The same rate/date also applies to the cost of
-        acquisition side when the asset was purchased in foreign currency. Verified against the
-        official Rule 115 text (incometaxindia.gov.in) - NOT the rate on the transfer date itself.
+        preceding the month of transfer (sale), NOT the rate on the transfer date itself. This
+        is confirmed to govern the sale-proceeds/gain figure's conversion date.
+
+        Deliberately NOT used for the cost-of-acquisition leg (Schedule FA Table A3's "Initial
+        Value of Investment"): the official Rule 115 text does not clearly settle whether a
+        resident taxpayer's cost of acquisition uses this same preceding-month-end mechanism -
+        that governs Rule 115A's NRI capital-gains computation specifically, a different
+        provision with its own (average buying/selling rate) method, not this one. Initial
+        Investment therefore still uses the straightforward exact acquisition-date rate via
+        get_rate() until this is authoritatively confirmed one way or the other.
         """
         return self._preceding_month_end_rate(transfer_date)
 

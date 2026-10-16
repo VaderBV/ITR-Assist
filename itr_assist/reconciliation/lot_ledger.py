@@ -160,6 +160,7 @@ class LotLedger:
                 gross_proceeds_usd=sale.gross_proceeds_usd,
                 matched_lot_id=next(iter(allocations)) if len(allocations) == 1 else None,
                 lot_allocations=allocations,
+                unmatched_quantity=max(0.0, remaining_to_match),
             ))
 
         return enriched_sales

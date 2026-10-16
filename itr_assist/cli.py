@@ -199,6 +199,7 @@ def main() -> int:
         cy_tax_withheld_usd=cy_tax_usd,
         is_resident=True,
         part_b_tti_sl19_yes=True,
+        sales=enriched_sales,
     )
     sc = val_report.scorecard
     print(f"      • Total Rules Evaluated   : {sc.total_rules}")

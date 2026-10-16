@@ -135,7 +135,7 @@ async function bootPyodide(onProgress) {
       "referencing",
       "pyodide-http",
     ]);
-    await micropip.install("./dist/itr_assist-1.0.5-py3-none-any.whl");
+    await micropip.install("./dist/itr_assist-1.0.6-py3-none-any.whl");
 
     onProgress("Patching network calls for the browser…");
     await pyodide.runPythonAsync(`
@@ -239,7 +239,7 @@ def run_pipeline(fy, taxpayer_name, pan, stmt_paths_json, market_api_key):
     val_report = validator.validate(
         a2=a2_res, a3_lots=a3_res, os_result=os_res, ftc=ftc_res, recon=report,
         form_1042s=form_1042s, cy_dividends_usd=cy_div_usd, cy_tax_withheld_usd=cy_tax_usd,
-        is_resident=True, part_b_tti_sl19_yes=True,
+        is_resident=True, part_b_tti_sl19_yes=True, sales=enriched_sales,
     )
 
     out_path = "/output/ITR_Schedules.xlsx"

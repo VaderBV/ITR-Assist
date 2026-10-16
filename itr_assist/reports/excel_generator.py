@@ -472,6 +472,8 @@ class ITRWorkbookGenerator:
             ("Dividends Source\n[Audit Provenance]", True),
             # Proceeds & Status:
             ("Total Gross Proceeds\nfrom Sale (₹) (Col 12)", False),
+            ("Gross Proceeds ($)\n[Working - USD]", True),
+            ("Proceeds Source\n[Audit Provenance]", True),
             ("Sold Lot\nFlag [Status]", True)
         ]
 
@@ -485,7 +487,7 @@ class ITRWorkbookGenerator:
         ws.row_dimensions[row_idx].height = 35
 
         row_idx = 5
-        working_col_indices = {11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 23, 24, 25, 26, 27, 29, 30, 32}
+        working_col_indices = {11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 23, 24, 25, 26, 27, 29, 30, 32, 33}
 
         for idx, lot in enumerate(a3_lots, start=1):
             is_even = (idx % 2 == 0)
@@ -535,8 +537,10 @@ class ITRWorkbookGenerator:
                 (lot.gross_dividends_usd, True, "right", "$#,##0.00", True),
                 (lot.source_dividends, True, "left", "@", False),
 
-                # Col 31-32: Proceeds & Status
+                # Col 31-34: Proceeds & Status
                 (lot.gross_proceeds_inr, False, "right", "₹ #,##,##0", True),
+                (lot.gross_proceeds_usd, True, "right", "$#,##0.00", True),
+                (lot.source_proceeds, True, "left", "@", False),
                 (sold_text, True, "center", "@", False)
             ]
 
@@ -554,10 +558,10 @@ class ITRWorkbookGenerator:
                         cell.fill = self._fill_zebra
                     cell.font = self._font_bold if is_bold else self._font_regular
 
-                if col_idx in (15, 21, 27, 30):
+                if col_idx in (15, 21, 27, 30, 33):
                     cell.font = self._font_small
 
-                if lot.is_sold_lot and col_idx == 32:
+                if lot.is_sold_lot and col_idx == 34:
                     cell.fill = PatternFill(start_color=COLOR_WARNING_AMBER, end_color=COLOR_WARNING_AMBER, fill_type="solid")
                     cell.font = self._font_bold
 
@@ -607,7 +611,11 @@ class ITRWorkbookGenerator:
         ws.cell(row=row_idx, column=31, value=f"=SUM(AE5:AE{row_idx-1})").font = self._font_bold
         ws.cell(row=row_idx, column=31).number_format = "₹ #,##,##0"
 
-        for c in range(1, 33):
+        # Col 32: Gross Proceeds USD (Working)
+        ws.cell(row=row_idx, column=32, value=f"=SUM(AF5:AF{row_idx-1})").font = self._font_working_bold
+        ws.cell(row=row_idx, column=32).number_format = "$#,##0.00"
+
+        for c in range(1, 35):
             cell = ws.cell(row=row_idx, column=c)
             cell.border = self._border_double_bottom
             if c in working_col_indices:

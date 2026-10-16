@@ -32,6 +32,11 @@ class SaleEvent:
     # LotLedger.allocate_sales(). A single sell order can close out more than one vest/purchase
     # lot (e.g. selling 20 shares when lot A has 12 remaining and lot B has 20).
     lot_allocations: Dict[str, float] = field(default_factory=dict)
+    # Shares this sale couldn't be matched to any active lot for (e.g. the lot was sold/released
+    # in a year whose statements weren't supplied, so no candidate lot had enough remaining
+    # shares). Nonzero means gross_proceeds in lot_allocations understates the true sale
+    # proceeds - surfaced as a validation finding rather than silently dropped.
+    unmatched_quantity: float = 0.0
 
 
 @dataclass

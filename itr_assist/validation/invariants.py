@@ -1,7 +1,7 @@
 """Accounting, Valuation, and Cross-Document Invariant Validators."""
 from typing import List, Optional
 
-from itr_assist.models import Form1042SData, ReconciliationReport
+from itr_assist.models import Form1042SData, ReconciliationReport, SaleEvent
 from itr_assist.services.valuation import (
     ScheduleFATableA2Result,
     ScheduleFATableA3LotResult,
@@ -98,9 +98,48 @@ class InvariantValidator:
         form_1042s: Optional[Form1042SData],
         cy_dividends_usd: float,
         cy_tax_withheld_usd: float,
+        sales: Optional[List[SaleEvent]] = None,
     ) -> List[ValidationRuleResult]:
         """Validate cross-document reconciliation against Form 1042-S and share holdings ledger."""
         results: List[ValidationRuleResult] = []
+
+        # 0. Fully-matched sale allocation (LotLedger.allocate_sales() silently under-allocates
+        # when fewer shares remain across candidate lots than a sale needs - e.g. the lot that
+        # was actually sold vested/was disposed in a year whose statements weren't supplied).
+        # Flag it instead of letting Table A3 gross proceeds quietly understate the real figure.
+        unmatched_sales = [s for s in (sales or []) if s.unmatched_quantity > 1e-6]
+        if unmatched_sales:
+            details = "; ".join(
+                f"{s.sale_date.isoformat()}: {s.unmatched_quantity:.2f} of {s.quantity:.2f} shares "
+                f"sold could not be matched to any active lot (likely sold/disposed in a year "
+                f"whose statements weren't supplied) - gross proceeds for this sale are understated"
+                for s in unmatched_sales
+            )
+            results.append(
+                ValidationRuleResult(
+                    rule_id="INV-SALE-ALLOCATION-COMPLETE",
+                    category=RuleCategory.DOCUMENT_RECONCILIATION,
+                    authority="Cross-Document Reconciliation (Sale Events vs Benefit History Lots)",
+                    title="Sale Quantity Fully Matched to Active Lots",
+                    description="Every parsed sale must FIFO-match in full against lots with enough remaining shares.",
+                    severity=Severity.AUDIT_WARNING,
+                    status=RuleStatus.FAILED,
+                    details=details,
+                )
+            )
+        elif sales:
+            results.append(
+                ValidationRuleResult(
+                    rule_id="INV-SALE-ALLOCATION-COMPLETE",
+                    category=RuleCategory.DOCUMENT_RECONCILIATION,
+                    authority="Cross-Document Reconciliation (Sale Events vs Benefit History Lots)",
+                    title="Sale Quantity Fully Matched to Active Lots",
+                    description="Every parsed sale must FIFO-match in full against lots with enough remaining shares.",
+                    severity=Severity.AUDIT_WARNING,
+                    status=RuleStatus.PASSED,
+                    details=f"All {len(sales)} parsed sale(s) fully matched to active lots.",
+                )
+            )
 
         # 1. Share holdings reconciliation
         if recon:

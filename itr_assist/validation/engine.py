@@ -1,7 +1,7 @@
 """Unified Validation Engine orchestrating schema, statutory, PDF, and invariant rules."""
 from typing import List, Optional
 
-from itr_assist.models import Form1042SData, ReconciliationReport
+from itr_assist.models import Form1042SData, ReconciliationReport, SaleEvent
 from itr_assist.services.sbi_rates import SBIRateService
 from itr_assist.services.valuation import (
     FTCResult,
@@ -44,6 +44,7 @@ class ValidationEngine:
         cy_tax_withheld_usd: float = 0.0,
         is_resident: bool = True,
         part_b_tti_sl19_yes: bool = True,
+        sales: Optional[List[SaleEvent]] = None,
     ) -> ValidationReport:
         """Run all validation tiers and produce an authoritative validation report."""
         all_results: List[ValidationRuleResult] = []
@@ -80,6 +81,7 @@ class ValidationEngine:
                 form_1042s=form_1042s,
                 cy_dividends_usd=cy_dividends_usd,
                 cy_tax_withheld_usd=cy_tax_withheld_usd,
+                sales=sales,
             )
         )
 

@@ -266,8 +266,12 @@ class TestITRWorkbookGenerator(unittest.TestCase):
         self.assertEqual(ws["AB5"].value, 1229)                    # Gross Dividends INR (Col 11)
         self.assertAlmostEqual(ws["AC5"].value, 14.29, places=1)   # Gross Dividends USD (Working)
         self.assertEqual(ws["AE5"].value, 0)                       # Gross Proceeds INR (Col 12)
-        self.assertIn("Sold Lot", ws["AF4"].value)                 # Sold Lot Header
-        self.assertEqual(ws["AF5"].value, "YES (Sold 2025)")       # Sold Lot Flag - real disposal_date (2025-06-15) year, not a hardcoded guess
+        self.assertAlmostEqual(ws["AF5"].value, 0.0, places=1)     # Gross Proceeds USD (Working)
+        # This lot has no matching sale, so source_proceeds is "" - openpyxl stores an
+        # empty-string cell value as None, not "".
+        self.assertIsNone(ws["AG5"].value)                         # Proceeds Source (Working, empty - no sale)
+        self.assertIn("Sold Lot", ws["AH4"].value)                 # Sold Lot Header
+        self.assertEqual(ws["AH5"].value, "YES (Sold 2025)")       # Sold Lot Flag - real disposal_date (2025-06-15) year, not a hardcoded guess
 
         # Check total formulas on row 8
         self.assertEqual(ws["J8"].value, "=SUM(J5:J7)")            # Initial Value INR Total
@@ -277,6 +281,8 @@ class TestITRWorkbookGenerator(unittest.TestCase):
         self.assertEqual(ws["Q8"].value, "=SUM(Q5:Q7)")            # Peak Value USD Total
         self.assertEqual(ws["V8"].value, "=SUM(V5:V7)")            # Closing Balance INR Total
         self.assertEqual(ws["W8"].value, "=SUM(W5:W7)")            # Closing Value USD Total
+        self.assertEqual(ws["AE8"].value, "=SUM(AE5:AE7)")         # Gross Proceeds INR Total
+        self.assertEqual(ws["AF8"].value, "=SUM(AF5:AF7)")         # Gross Proceeds USD Total
 
     def test_sbi_rate_register_content(self):
         ws = self.wb["Audit_SBI_TTBR_Register"]

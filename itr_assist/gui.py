@@ -400,6 +400,8 @@ class ITRAssistGUI:
 
         self._log(f"[Auto-Fill] Scanning directory: {folder}")
         found_count = 0
+        cy_hint = fy_to_calendar_year(self.var_fy.get())
+        next_cy_hint = cy_hint + 1
         try:
             for entry in os.listdir(folder):
                 full_p = os.path.join(folder, entry)
@@ -407,8 +409,6 @@ class ITRAssistGUI:
                     continue
                 name_low = entry.lower()
 
-                cy_hint = fy_to_calendar_year(self.var_fy.get())
-                next_cy_hint = cy_hint + 1
                 if "benefit" in name_low and name_low.endswith((".xlsx", ".xls", ".csv")):
                     self.var_benefit_history.set(os.path.abspath(full_p))
                     found_count += 1
@@ -617,6 +617,7 @@ class ITRAssistGUI:
                 cy_tax_withheld_usd=cy_tax_usd,
                 is_resident=True,
                 part_b_tti_sl19_yes=True,
+                sales=enriched_sales,
             )
             sc = val_report.scorecard
             self._log(f"      • Rules Evaluated: {sc.total_rules}  |  Passed: {sc.passed}  |  Failed: {sc.failed}")

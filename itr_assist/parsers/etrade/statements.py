@@ -140,8 +140,15 @@ class ETradeStatementParser(BaseStatementParser):
                 # Amount. Gross proceeds for Schedule FA/capital-gains purposes must be the GROSS
                 # sale consideration, so it's computed here as quantity * price, not read from
                 # the Credits column.
+                # The quantity/price/credits triple is required to start its own line (anchored
+                # on a preceding newline) rather than matching the first 3 decimal-looking
+                # numbers found anywhere in the next 200 chars - without this, a description/
+                # comments block containing an unrelated dollar figure or CUSIP-like number
+                # could bind to the wrong triple and still pass the sanity check below (e.g. if
+                # it happens to look like a plausible credits-vs-gross ratio). Both verified real
+                # examples have the triple on its own line after the description/comments.
                 for m in re.finditer(
-                    r'(\d{1,2}/\d{1,2})\s+\d{1,2}/\d{1,2}\s+Sold\b[\s\S]{0,200}?([\d,]+\.\d+)\s+\$?([\d,]+\.\d+)\s+\$?([\d,]+\.\d+)',
+                    r'(\d{1,2}/\d{1,2})\s+\d{1,2}/\d{1,2}\s+Sold\b[\s\S]{0,200}?\n\s*([\d,]+\.\d+)\s+\$?([\d,]+\.\d+)\s+\$?([\d,]+\.\d+)',
                     txt,
                 ):
                     date_part, qty_str, price_str, credits_str = m.groups()

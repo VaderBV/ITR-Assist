@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "itr-assist"
-version = "1.0.5"
+version = "1.0.6"
 description = "Automated statutory assistant for Indian Income Tax Return (ITR-2) Foreign Assets (Schedule FA, OS, FSI, TR, Form 67)"
 readme = "README.md"
 requires-python = ">=3.10"
