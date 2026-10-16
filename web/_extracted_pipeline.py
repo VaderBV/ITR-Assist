@@ -1,4 +1,3 @@
-
 import json, traceback
 from datetime import date
 from itr_assist.parsers import BrokerParserFactory
@@ -11,7 +10,7 @@ from itr_assist.services.sbi_rates import SBIRateService
 from itr_assist.services.valuation import ValuationEngine
 from itr_assist.validation import ValidationEngine
 
-def run_pipeline(fy, taxpayer_name, pan, stmt_paths_json):
+def run_pipeline(fy, taxpayer_name, pan, stmt_paths_json, market_api_key):
     cy = fy_to_calendar_year(fy)
     next_cy = cy + 1
     ay_y1 = cy + 1
@@ -19,7 +18,7 @@ def run_pipeline(fy, taxpayer_name, pan, stmt_paths_json):
 
     stmt_paths = json.loads(stmt_paths_json)
     if not stmt_paths:
-        raise ValueError("No statement PDFs were provided - select every month's PDF for both the Calendar Year and Q4/FY-End slots.")
+        raise ValueError("No statement PDFs were provided - select every statement you have, from account-open through the end of the filing year.")
 
     adapter = BrokerParserFactory.auto_detect(stmt_paths[0])
     all_lots = adapter.parse_benefit_history("/uploads/benefit.xlsx")
@@ -43,13 +42,17 @@ def run_pipeline(fy, taxpayer_name, pan, stmt_paths_json):
     detected_symbols = list(set(l.symbol for l in all_lots if l.symbol))
     symbols = detected_symbols if detected_symbols else list(set(d.symbol for d in dividends if d.symbol))
 
-    market_warning = None
-    mkt = MarketDataService()
+    mkt = MarketDataService(api_key=(market_api_key or None))
     for sym in symbols:
-        try:
-            mkt.load_symbol(sym)
-        except Exception as e:
-            market_warning = f"Could not load live market data for {sym}: {e}"
+        mkt.load_symbol(sym)
+    market_warning = None
+    if mkt.unavailable_symbols:
+        key_note = "even with the provided API key" if market_api_key else "no API key was provided"
+        market_warning = (
+            f"Live market data unavailable for {', '.join(sorted(mkt.unavailable_symbols))} "
+            f"({key_note}) - Peak/Closing Balance approximated using vest FMV instead "
+            f"of actual daily stock prices. Review Table A2/A3 before filing."
+        )
 
     primary_sym = symbols[0] if symbols else "STOCK"
     account_num = form_1042s.account_number if form_1042s and form_1042s.account_number else ""
@@ -109,7 +112,7 @@ def run_pipeline(fy, taxpayer_name, pan, stmt_paths_json):
     })
 
 try:
-    result = run_pipeline(fy, taxpayer_name, pan, stmt_paths_json)
+    result = run_pipeline(fy, taxpayer_name, pan, stmt_paths_json, market_api_key)
 except Exception as e:
     import json as _json
     result = _json.dumps({"ok": False, "error": str(e), "traceback": traceback.format_exc()})

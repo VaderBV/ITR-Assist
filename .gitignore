@@ -35,7 +35,13 @@ ENV/
 # Output Workbooks & Temporary Office Lock Files
 ITR2_*.xlsx
 ~$*.xlsx
-*.xlsx
+~$*.xlsm
+# NOT a blanket "*.xlsx" - that also swallowed web/_synth/benefit.xlsx and holdings.xlsx,
+# legitimate synthetic test fixtures with no personal data that web/_run_pipeline_test.py
+# needs tracked to actually work for anyone else cloning the repo. Ignore known *output*
+# artifacts by exact name instead.
+web/_synth/ITR_Schedules.xlsx
+web/_synth/Real_FY2526_Output.xlsx
 scratch/
 
 # IDE & OS-Specific Files
