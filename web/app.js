@@ -35,6 +35,9 @@ const state = {
   lastOutputName: null,
 };
 
+// Twelve Data market-data key used for in-browser daily prices (Yahoo is CORS-blocked).
+const MARKET_API_KEY = "5021dde7c95e432ebb8a264e8aca0cbe";
+
 // Bumped on every input change. A run whose inputs changed while it was in flight discards
 // its output instead of showing results that no longer match the form.
 let inputsVersion = 0;
@@ -494,10 +497,9 @@ async function generate() {
     const fy = state.fy;
     const taxpayerName = $("tp-name").value.trim();
     const pan = normalizePan($("tp-pan").value);
-    // Local-only key, set in web/local.config.js (git-ignored, never committed).
-    // A public user can enter the key in the page; generation stops if verified prices
-    // are unavailable.
-    const marketApiKey = $("market-api-key").value.trim();
+    // Hardcoded Twelve Data key (owner-approved, temporary until a keyless price source
+    // is chosen). web/local.config.js can still override it locally.
+    const marketApiKey = window.ITR_ASSIST_MARKET_API_KEY || MARKET_API_KEY;
     pyodide.globals.set("fy", fy);
     pyodide.globals.set("taxpayer_name", taxpayerName);
     pyodide.globals.set("pan", pan);
@@ -749,9 +751,6 @@ function initTaxpayerInputs() {
   });
 
   $("tp-name").addEventListener("input", onInputsChanged);
-  const marketKey = $("market-api-key");
-  marketKey.value = window.ITR_ASSIST_MARKET_API_KEY || "";
-  marketKey.addEventListener("input", onInputsChanged);
 }
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
