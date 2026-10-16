@@ -4,6 +4,7 @@ from datetime import date
 import os
 import sys
 
+from itr_assist.models import PLACEHOLDER_PREFIX
 from itr_assist.parsers import BrokerParserFactory
 from itr_assist.reconciliation.lot_ledger import LotLedger
 from itr_assist.reconciliation.verifier import DocumentVerifier
@@ -38,6 +39,9 @@ def main() -> int:
     parser.add_argument("--employer-name", default=None, help="Employer entity name for Schedule FA Table A3")
     parser.add_argument("--employer-address", default=None, help="Employer entity address for Schedule FA Table A3")
     parser.add_argument("--employer-zip", default=None, help="Employer zip code for Schedule FA Table A3")
+    parser.add_argument("--broker-address", default=None, help="Broker address for Schedule FA Table A2 (read from Form 1042-S if omitted)")
+    parser.add_argument("--broker-zip", default=None, help="Broker ZIP code for Schedule FA Table A2 (read from Form 1042-S if omitted)")
+    parser.add_argument("--account-open-date", default=None, help="Date the broker account was opened, YYYY-MM-DD (Table A2; not on any statement)")
 
     args = parser.parse_args()
 
@@ -106,8 +110,8 @@ def main() -> int:
     print(f"      • Form 1042-S: Verified Gross ${form_1042s.gross_dividend_usd:.2f}, Tax ${form_1042s.tax_withheld_usd:.2f}")
 
     # Auto-detect Taxpayer Name and PAN from Form 1042-S if not explicitly passed
-    taxpayer_name = args.taxpayer_name or (form_1042s.recipient_name if form_1042s and form_1042s.recipient_name else "SAMPLE TAXPAYER")
-    pan = args.pan or (form_1042s.recipient_tin if form_1042s and form_1042s.recipient_tin else "ABCDE1234F")
+    taxpayer_name = args.taxpayer_name or (form_1042s.recipient_name if form_1042s and form_1042s.recipient_name else f"{PLACEHOLDER_PREFIX}: taxpayer name")
+    pan = args.pan or (form_1042s.recipient_tin if form_1042s and form_1042s.recipient_tin else f"{PLACEHOLDER_PREFIX}: PAN")
 
     # 2. Reconstruct Chronological Lot Ledger
     print("\n[2/5] Reconstructing chronological lot lifecycle & sold lots...")
@@ -152,10 +156,20 @@ def main() -> int:
     # 4. Valuation Engine Computations
     print("\n[4/5] Computing Schedule FA, OS, FSI, TR, and Form 67 figures...")
     primary_sym = symbols[0] if symbols else "STOCK"
-    employer_name = args.employer_name or f"{primary_sym} Corporation"
-    employer_address = args.employer_address or "Corporate Headquarters Address"
-    employer_zip = args.employer_zip or "00000"
+    # Details no broker document states stay blank here and become "TO BE FILLED" placeholders
+    # in the engine (flagged by validation) instead of invented values.
+    security_names = {}
+    for summary in statement_summaries:
+        security_names.update(summary.holdings_name)
+    employer_name = args.employer_name or security_names.get(primary_sym, "")
+    employer_address = args.employer_address or ""
+    employer_zip = args.employer_zip or ""
     account_num = form_1042s.account_number if form_1042s and form_1042s.account_number else ""
+    broker_address, broker_zip, broker_source = args.broker_address or "", args.broker_zip or "", ""
+    if not broker_address and form_1042s and form_1042s.withholding_agent_address:
+        broker_address = form_1042s.withholding_agent_address
+        broker_zip = broker_zip or form_1042s.withholding_agent_zip
+        broker_source = "Form 1042-S box 12 (withholding agent)"
 
     engine = ValuationEngine(
         ledger=ledger,
@@ -165,11 +179,19 @@ def main() -> int:
         employer_entity_address=employer_address,
         employer_zip=employer_zip,
         broker_name=adapter.broker_name,
-        account_number=account_num
+        account_number=account_num,
+        broker_address=broker_address,
+        broker_zip=broker_zip,
+        account_open_date=args.account_open_date or "",
+        broker_details_source=broker_source,
     )
 
-    dec_summary = next(s for s in statement_summaries if s.end_date == date(cy, 12, 31))
-    a2_res = engine.compute_table_a2(cy, dec_summary, dividends)
+    dec_summary = next((s for s in statement_summaries if s.end_date == date(cy, 12, 31)), None)
+    if dec_summary is None:
+        raise SystemExit(f"No statement period ending 31-Dec-{cy} found - check the statements cover all of {cy}.")
+    a2_res = engine.compute_table_a2(
+        cy, dec_summary, dividends, statement_summaries=statement_summaries, cy_sales=enriched_sales
+    )
     a3_res = engine.compute_table_a3(cy, dividends, enriched_sales)
 
     fy_divs = [d for d in dividends if date(cy, 4, 1) <= d.pay_date <= date(next_cy, 3, 31)]
@@ -202,6 +224,7 @@ def main() -> int:
         statement_summaries=statement_summaries,
         lots=ledger.lots,
         calendar_year=cy,
+        taxpayer_fields={"taxpayer name": taxpayer_name, "PAN": pan},
     )
     sc = val_report.scorecard
     print(f"      • Total Rules Evaluated   : {sc.total_rules}")

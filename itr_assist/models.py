@@ -2,13 +2,18 @@
 from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 
 # Prefix for any statutory field the source documents cannot supply (e.g. the employer's
 # address, the broker account's opening date). Written in place of a made-up value so the
 # workbook shows exactly what the taxpayer must fill in, and validation fails until they do.
 PLACEHOLDER_PREFIX = "TO BE FILLED"
+
+
+def is_placeholder(value: object) -> bool:
+    """True for a value that stands in for a statutory field the documents could not supply."""
+    return isinstance(value, str) and value.startswith(PLACEHOLDER_PREFIX)
 
 
 class PlanType(str, Enum):
@@ -103,12 +108,22 @@ class StatementPeriodSummary:
     tax_withheld_usd: float = 0.0
     transfers_in_shares: float = 0.0
     # Period-end positions from the statement's holdings section, keyed by ticker:
-    # quantity and the statement's own period-end share price (e.g. "QUALCOMM INC (QCOM)
-    # 33.000 $171.050 ..."). shares_held is the total quantity across all positions.
+    # quantity and the statement's own period-end share price (e.g. "ACME CORP (ACME)
+    # 40.000 $150.000 ..."). shares_held is the total quantity across all positions.
     holdings_qty: Dict[str, float] = field(default_factory=dict)
     holdings_price: Dict[str, float] = field(default_factory=dict)
+    # Security description as the statement prints it, keyed by ticker ("ACME CORP").
+    holdings_name: Dict[str, str] = field(default_factory=dict)
     # Interest income credited during the period (e.g. bank-deposit sweep interest).
     interest_usd: float = 0.0
+    # Dated interest credits (activity date, USD). interest_usd is their sum; the dates are
+    # needed to convert each credit at its own Rule 115 rate.
+    interest_events: List[Tuple[date, float]] = field(default_factory=list)
+    # Cash roll-forward printed on the statement: OPENING CASH, every row of the "CASH FLOW
+    # ACTIVITY BY DATE" table dated by the day it hits cash (settlement date), and the
+    # CLOSING CASH. opening + sum(events) == cash_balance_usd is checked by CashTimeline.
+    opening_cash_usd: Optional[float] = None
+    cash_events: List[Tuple[date, float, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -121,6 +136,10 @@ class Form1042SData:
     withholding_rate: float
     withholding_agent: str
     account_number: str
+    # Withholding agent's (the custodian's) address as printed in Form 1042-S box 12; empty when
+    # it could not be read with confidence, in which case the taxpayer must supply it.
+    withholding_agent_address: str = ""
+    withholding_agent_zip: str = ""
 
 
 @dataclass

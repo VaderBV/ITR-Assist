@@ -8,6 +8,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Dict, List, Optional
 
+from itr_assist.models import PLACEHOLDER_PREFIX
 from itr_assist.parsers import BrokerParserFactory
 from itr_assist.reconciliation.lot_ledger import LotLedger
 from itr_assist.reconciliation.verifier import DocumentVerifier
@@ -55,6 +56,13 @@ class ITRAssistGUI:
         # 3. Taxpayer details and output settings
         self.var_taxpayer_name = tk.StringVar(value="")
         self.var_pan = tk.StringVar(value="")
+        # Details no broker document states (Table A2/A3); blank -> "TO BE FILLED" + flagged.
+        self.var_open_date = tk.StringVar(value="")
+        self.var_broker_address = tk.StringVar(value="")
+        self.var_broker_zip = tk.StringVar(value="")
+        self.var_company_name = tk.StringVar(value="")
+        self.var_company_address = tk.StringVar(value="")
+        self.var_company_zip = tk.StringVar(value="")
         self.var_broker = tk.StringVar(value="Auto-Detect")
         self.var_output = tk.StringVar(value=os.path.abspath(f"ITR2_Foreign_Assets_Working_AY{self.var_ay.get()}.xlsx"))
         self.var_status = tk.StringVar(value="Ready. Select individual input files and click 'Generate ITR-2 Working'.")
@@ -137,6 +145,23 @@ class ITRAssistGUI:
         ttk.Label(config_group, text="Output Excel:").grid(row=2, column=0, sticky="w", padx=4, pady=3)
         ttk.Entry(config_group, textvariable=self.var_output, width=65).grid(row=2, column=1, columnspan=3, sticky="ew", padx=4, pady=3)
         ttk.Button(config_group, text="Save As...", command=self._browse_output, style="Secondary.TButton").grid(row=2, column=4, padx=6, pady=3)
+
+        # Rows 3-4: details the documents do not contain (blank = auto-filled where possible)
+        ttk.Label(config_group, text="Account opened (YYYY-MM-DD):").grid(row=3, column=0, sticky="w", padx=4, pady=3)
+        ttk.Entry(config_group, textvariable=self.var_open_date, width=28).grid(row=3, column=1, sticky="w", padx=4, pady=3)
+        ttk.Label(config_group, text="Broker address / ZIP:").grid(row=3, column=2, sticky="w", padx=4, pady=3)
+        broker_box = ttk.Frame(config_group)
+        broker_box.grid(row=3, column=3, columnspan=3, sticky="ew", padx=4, pady=3)
+        ttk.Entry(broker_box, textvariable=self.var_broker_address, width=44).pack(side=tk.LEFT)
+        ttk.Entry(broker_box, textvariable=self.var_broker_zip, width=9).pack(side=tk.LEFT, padx=(6, 0))
+
+        ttk.Label(config_group, text="Company name:").grid(row=4, column=0, sticky="w", padx=4, pady=3)
+        ttk.Entry(config_group, textvariable=self.var_company_name, width=28).grid(row=4, column=1, sticky="w", padx=4, pady=3)
+        ttk.Label(config_group, text="Company address / ZIP:").grid(row=4, column=2, sticky="w", padx=4, pady=3)
+        company_box = ttk.Frame(config_group)
+        company_box.grid(row=4, column=3, columnspan=3, sticky="ew", padx=4, pady=3)
+        ttk.Entry(company_box, textvariable=self.var_company_address, width=44).pack(side=tk.LEFT)
+        ttk.Entry(company_box, textvariable=self.var_company_zip, width=9).pack(side=tk.LEFT, padx=(6, 0))
 
         config_group.columnconfigure(3, weight=1)
 
@@ -551,6 +576,8 @@ class ITRAssistGUI:
             if not pan and form_1042s and form_1042s.recipient_tin:
                 pan = form_1042s.recipient_tin
                 self.root.after(0, self.var_pan.set, pan)
+            taxpayer_name = taxpayer_name or f"{PLACEHOLDER_PREFIX}: taxpayer name"
+            pan = pan or f"{PLACEHOLDER_PREFIX}: PAN"
 
             # 2. Reconcile
             self._log("\n[2/5] Reconciling chronological lot ledger & sold lots...")
@@ -585,16 +612,38 @@ class ITRAssistGUI:
             self._log("\n[4/5] Computing Schedule FA, OS, FSI, TR, and Form 67...")
             primary_sym = symbols[0] if symbols else "STOCK"
             account_num = form_1042s.account_number if form_1042s and form_1042s.account_number else ""
+            # Anything the documents cannot supply stays blank here and becomes a flagged
+            # "TO BE FILLED" placeholder in the engine, never an invented value.
+            security_names = {}
+            for summary in summaries:
+                security_names.update(summary.holdings_name)
+            broker_address = self.var_broker_address.get().strip()
+            broker_zip = self.var_broker_zip.get().strip()
+            broker_source = ""
+            if not broker_address and form_1042s and form_1042s.withholding_agent_address:
+                broker_address = form_1042s.withholding_agent_address
+                broker_zip = broker_zip or form_1042s.withholding_agent_zip
+                broker_source = "Form 1042-S box 12 (withholding agent)"
             engine = ValuationEngine(
                 ledger=ledger,
                 sbi_service=sbi,
                 market_service=mkt,
-                employer_entity_name=f"{primary_sym} Corporation",
+                employer_entity_name=self.var_company_name.get().strip() or security_names.get(primary_sym, ""),
+                employer_entity_address=self.var_company_address.get().strip(),
+                employer_zip=self.var_company_zip.get().strip(),
                 broker_name=adapter.broker_name,
-                account_number=account_num
+                account_number=account_num,
+                broker_address=broker_address,
+                broker_zip=broker_zip,
+                account_open_date=self.var_open_date.get().strip(),
+                broker_details_source=broker_source,
             )
-            dec_summary = next(s for s in summaries if s.end_date == date(cy, 12, 31))
-            a2_res = engine.compute_table_a2(cy, dec_summary, dividends)
+            dec_summary = next((s for s in summaries if s.end_date == date(cy, 12, 31)), None)
+            if dec_summary is None:
+                raise ValueError(f"No statement period ending 31-Dec-{cy} found - check the statements cover all of {cy}.")
+            a2_res = engine.compute_table_a2(
+                cy, dec_summary, dividends, statement_summaries=summaries, cy_sales=enriched_sales
+            )
             a3_res = engine.compute_table_a3(cy, dividends, enriched_sales)
 
             fy_divs = [d for d in dividends if date(cy, 4, 1) <= d.pay_date <= date(next_cy, 3, 31)]
@@ -620,6 +669,7 @@ class ITRAssistGUI:
                 statement_summaries=summaries,
                 lots=ledger.lots,
                 calendar_year=cy,
+                taxpayer_fields={"taxpayer name": taxpayer_name, "PAN": pan},
             )
             sc = val_report.scorecard
             self._log(f"      • Rules Evaluated: {sc.total_rules}  |  Passed: {sc.passed}  |  Failed: {sc.failed}")

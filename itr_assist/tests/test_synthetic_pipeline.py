@@ -115,8 +115,12 @@ def synthetic_data():
                 cash_balance_usd=40.0,
                 equities_value_usd=1460.0,
                 shares_held=15.0,
+                opening_cash_usd=40.0,
             )
         )
+    # Cash is constant $40 through 2024, then a $10 deposit in Jan 2025 takes it to $50 for the
+    # year: every statement's opening cash + its activity rows equals its printed closing cash,
+    # which is what lets Table A2 trust the cash for each day.
     for month in range(1, 13):
         start_d = date(2025, month, 1)
         end_d = date(2025, month, 28 if month == 2 else (30 if month in (4, 6, 9, 11) else 31))
@@ -126,10 +130,13 @@ def synthetic_data():
                 start_date=start_d,
                 end_date=end_d,
                 beginning_value_usd=1500.0,
-                ending_value_usd=1600.0 if month < 12 else 1700.0,
+                # Dec: 15 shares x $112 close on 31-Dec + $50 cash, as the valuation must reproduce.
+                ending_value_usd=1600.0 if month < 12 else 1730.0,
                 cash_balance_usd=50.0,
-                equities_value_usd=1550.0,
+                equities_value_usd=1550.0 if month < 12 else 1680.0,
                 shares_held=15.0,
+                opening_cash_usd=40.0 if month == 1 else 50.0,
+                cash_events=[(date(2025, 1, 15), 10.0, "Funds Received")] if month == 1 else [],
             )
         )
     # Add Jan-Mar 2026 for complete FY
@@ -141,11 +148,13 @@ def synthetic_data():
                 period_label=f"Period {month}/2026",
                 start_date=start_d,
                 end_date=end_d,
-                beginning_value_usd=1700.0,
+                beginning_value_usd=1730.0,
                 ending_value_usd=1750.0,
                 cash_balance_usd=60.0,
                 equities_value_usd=1690.0,
                 shares_held=15.0,
+                opening_cash_usd=50.0 if month == 1 else 60.0,
+                cash_events=[(date(2026, 1, 15), 10.0, "Funds Received")] if month == 1 else [],
             )
         )
 
@@ -221,11 +230,15 @@ def test_synthetic_valuation_and_workbook_generation(synthetic_data):
         broker_address="100 Wall Street, New York, NY",
         broker_zip="10005",
         account_number="ACC-9876543",
+        account_open_date="2023-12-01",
     )
 
     # 1. Table A2
     dec_stmt = next(s for s in synthetic_data["summaries"] if s.end_date == date(2025, 12, 31))
-    a2_res = engine.compute_table_a2(2025, dec_stmt, synthetic_data["dividends"])
+    a2_res = engine.compute_table_a2(
+        2025, dec_stmt, synthetic_data["dividends"], statement_summaries=synthetic_data["summaries"]
+    )
+    assert not a2_res.peak_degraded, a2_res.peak_notes
     assert a2_res.peak_balance_inr > 0
     assert a2_res.closing_balance_inr > 0
     assert a2_res.account_number == "ACC-9876543"

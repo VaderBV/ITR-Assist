@@ -9,7 +9,7 @@ from jsonschema import Draft4Validator
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT4
 
-from itr_assist.models import ShareLot
+from itr_assist.models import ShareLot, is_placeholder
 from itr_assist.services.valuation import (
     FTCResult,
     ScheduleFATableA2Result,
@@ -50,6 +50,16 @@ class CBDTSchemaValidator:
         resource = Resource.from_contents(self.full_schema, default_specification=DRAFT4)
         self.registry = Registry().with_resource("itr2.json", resource)
 
+    @staticmethod
+    def _mask_placeholders(payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Swap "TO BE FILLED" stand-ins for a schema-valid dummy so the rest of the payload is
+        still checked; the missing details are reported once by INV-NO-PLACEHOLDERS instead of as
+        a confusing length/pattern error on every row."""
+        return {
+            key: (("2000-01-01" if "Date" in key else "X") if is_placeholder(value) else value)
+            for key, value in payload.items()
+        }
+
     def _validate_subschema(
         self, subschema_ref: str, payload: Dict[str, Any], rule_prefix: str, schedule_name: str, item_id: str = ""
     ) -> List[ValidationRuleResult]:
@@ -58,7 +68,7 @@ class CBDTSchemaValidator:
         sub_schema = {"$ref": f"itr2.json#/definitions/{subschema_ref}"}
         validator = Draft4Validator(sub_schema, registry=self.registry)
 
-        errors = list(validator.iter_errors(payload))
+        errors = list(validator.iter_errors(self._mask_placeholders(payload)))
         if not errors:
             results.append(
                 ValidationRuleResult(

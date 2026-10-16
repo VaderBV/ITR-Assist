@@ -59,15 +59,21 @@ python -m http.server 8743
 # then open http://127.0.0.1:8743/
 ```
 
-**Verified market data is required:** Yahoo Finance cannot be reached directly from a browser (no CORS support), and Schedule FA peak/closing values are not safely approximated. Get a free API key from [twelvedata.com](https://twelvedata.com) (no credit card) and enter it in the app. Generation stops rather than producing an unverifiable workbook when daily prices are unavailable.
-
-For local use, you can prefill the field by creating `web/local.config.js`:
+**Market data:** Yahoo Finance cannot be reached directly from a browser (no CORS support), and the Schedule FA peak is not safely approximated, so the web build fetches daily prices from [Twelve Data](https://twelvedata.com) using a key built into `web/app.js`. Generation stops rather than producing an unverifiable workbook when daily prices are unavailable. To use your own key locally, create `web/local.config.js` (git-ignored; it overrides the built-in key):
 
 ```js
 window.ITR_ASSIST_MARKET_API_KEY = "your-key-here";
 ```
 
-This file is git-ignored — it stays on your machine and is never committed or uploaded anywhere.
+**Details your documents don't contain:** the ITR form needs a few facts no broker statement prints: the account opening date (Table A2) and the foreign company's address and ZIP (Table A3). Enter them under *Details your documents don't contain*. The broker address/ZIP are read from Form 1042-S when possible and the company name from your statements; any field you leave blank is marked `TO BE FILLED` in the workbook, flagged as *Fix before filing*, and the download stays blocked until it is supplied. Nothing is ever filled in with an invented value.
+
+**How the peak is checked:** the Table A2 peak uses the account's real cash for each day, rebuilt from your statements' own cash activity. It is only trusted if cash + shares &times; closing price reproduces the total printed on every statement of the year; otherwise the scorecard says *Peak not verified* and why.
+
+**Known limits** (check these before filing):
+- Built for one listed ticker per account (an employer-RSU account). Sales and dividends are matched to the ticker found in the Benefit History file; shares of another ticker would make the peak check report *Peak not verified*.
+- The *Peak not verified* result is a warning on the scorecard and does not block the download; missing statements and missing details do.
+- Sale proceeds in Table A2 (row S) and Table A3 are the gross amount (quantity &times; price, before commission) converted at the preceding-month-end SBI rate (Rule 115, clause f). Confirm the rate date for the proceeds column against the current ITR-2 instructions.
+- Table A2 closing and peak are the whole account value (cash and shares); the shares are also listed in Table A3.
 
 #### GitHub Pages deployment
 
@@ -100,6 +106,8 @@ pip install -e .
 ---
 
 ### 2. Desktop GUI Application
+
+The GUI and CLI take the same extra details as the web app (`--account-open-date YYYY-MM-DD`, `--broker-address`, `--broker-zip`, `--employer-name`, `--employer-address`, `--employer-zip`); anything omitted becomes a flagged `TO BE FILLED` placeholder.
 
 Run the intuitive desktop interface:
 

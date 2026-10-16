@@ -353,14 +353,41 @@
             <label class="field-label" for="tp-pan">PAN</label>
             <input id="tp-pan" type="text" placeholder="ABCDE1234F" maxlength="10" style="margin-top:8px; font-family:var(--font-mono); letter-spacing:.08em; text-transform:uppercase;">
           </div>
-          <div>
-            <label class="field-label" for="market-api-key">Twelve Data API key</label>
-            <input id="market-api-key" type="password" autocomplete="off" placeholder="Required for verified browser market prices" style="margin-top:8px; font-family:var(--font-mono);">
-          </div>
         </div>
         <div style="display:flex; align-items:center; gap:7px; margin-top:12px; color:var(--text-faint); font-size:12px;">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
-          Name/PAN may be auto-filled from Form 1042-S. The market key stays only in this tab.
+          Name/PAN may be auto-filled from Form 1042-S.
+        </div>
+        <div class="eyebrow" style="margin:36px 0 18px;">Details your documents don't contain</div>
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(240px,1fr)); gap:20px; max-width:620px;">
+          <div>
+            <label class="field-label" for="d-open-date">Account opening date</label>
+            <input id="d-open-date" type="text" placeholder="YYYY-MM-DD" maxlength="10" inputmode="numeric" style="margin-top:8px;">
+          </div>
+          <div>
+            <label class="field-label" for="d-broker-address">Broker address</label>
+            <input id="d-broker-address" type="text" placeholder="Auto-filled from Form 1042-S if left blank" style="margin-top:8px;">
+          </div>
+          <div>
+            <label class="field-label" for="d-broker-zip">Broker ZIP</label>
+            <input id="d-broker-zip" type="text" placeholder="Auto-filled from Form 1042-S if left blank" maxlength="8" style="margin-top:8px;">
+          </div>
+          <div>
+            <label class="field-label" for="d-company-name">Company name</label>
+            <input id="d-company-name" type="text" placeholder="Auto-filled from your statements if left blank" style="margin-top:8px;">
+          </div>
+          <div>
+            <label class="field-label" for="d-company-address">Company address</label>
+            <input id="d-company-address" type="text" placeholder="Registered address of the foreign company" style="margin-top:8px;">
+          </div>
+          <div>
+            <label class="field-label" for="d-company-zip">Company ZIP</label>
+            <input id="d-company-zip" type="text" placeholder="e.g. 92121" maxlength="8" style="margin-top:8px;">
+          </div>
+        </div>
+        <div style="margin-top:12px; color:var(--text-faint); font-size:12px;">
+          Required by the ITR form but not printed on any broker statement. Anything left blank is marked
+          &ldquo;TO BE FILLED&rdquo; in the workbook and flagged before filing.
         </div>
       </div>
 

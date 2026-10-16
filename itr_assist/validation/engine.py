@@ -1,5 +1,5 @@
 """Unified Validation Engine orchestrating schema, statutory, PDF, and invariant rules."""
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from itr_assist.models import Form1042SData, SaleEvent, ShareLot, StatementPeriodSummary
 from itr_assist.services.sbi_rates import SBIRateService
@@ -48,6 +48,7 @@ class ValidationEngine:
         statement_summaries: Optional[List[StatementPeriodSummary]] = None,
         lots: Optional[List[ShareLot]] = None,
         calendar_year: Optional[int] = None,
+        taxpayer_fields: Optional[Dict[str, str]] = None,
     ) -> ValidationReport:
         """Run all validation tiers and produce an authoritative validation report."""
         all_results: List[ValidationRuleResult] = []
@@ -98,7 +99,9 @@ class ValidationEngine:
             )
 
         # 4. Valuation Invariants & Document Reconciliation
+        all_results.extend(self.invariant_validator.validate_placeholders(a2, a3_lots, taxpayer_fields))
         all_results.extend(self.invariant_validator.validate_peak_closing_invariants(a2, a3_lots))
+        all_results.extend(self.invariant_validator.validate_a2_integrity(a2, a3_lots))
         all_results.extend(
             self.invariant_validator.validate_cross_document_reconciliation(
                 form_1042s=form_1042s,

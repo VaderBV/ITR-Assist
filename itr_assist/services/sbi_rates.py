@@ -130,9 +130,8 @@ class SBIRateService:
     def get_rule_115_capital_gains_rate(self, transfer_date: date) -> Tuple[date, float]:
         """
         Explanation to Rule 115, clause (f) - capital gains on transfer of a foreign asset:
-        TTBR on the last day of the month immediately preceding the month of transfer. For a
-        capital-gains computation only; Schedule FA's sale-proceeds column converts at the
-        31-Dec rate instead (CBDT Schedule FA guide), so the valuation engine does not use this.
+        TTBR on the last day of the month immediately preceding the month of transfer. Used for
+        capital gains and for the Schedule FA sale-proceeds figures (A2 row S, A3 proceeds).
         """
         return self._preceding_month_end_rate(transfer_date)
 

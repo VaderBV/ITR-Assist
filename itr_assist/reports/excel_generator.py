@@ -7,7 +7,13 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from itr_assist.models import DividendEvent, Form1042SData, ReconciliationReport, StatementPeriodSummary
+from itr_assist.models import (
+    PLACEHOLDER_PREFIX,
+    DividendEvent,
+    Form1042SData,
+    ReconciliationReport,
+    StatementPeriodSummary,
+)
 from itr_assist.services.open_years import fy_to_calendar_year
 from itr_assist.services.sbi_rates import SBIRateService
 from itr_assist.services.valuation import (
@@ -75,8 +81,8 @@ class ITRWorkbookGenerator:
         reconciliation_report: ReconciliationReport,
         dividends: List[DividendEvent],
         statement_summaries: List[StatementPeriodSummary],
-        taxpayer_name: str = "SAMPLE TAXPAYER",
-        pan: str = "ABCDE1234F",
+        taxpayer_name: str = f"{PLACEHOLDER_PREFIX}: taxpayer name",
+        pan: str = f"{PLACEHOLDER_PREFIX}: PAN",
         ay: str = "2026-27",
         fy: str = "2025-26",
         sbi_service: Optional[SBIRateService] = None,
@@ -434,6 +440,17 @@ class ITRWorkbookGenerator:
             f"4. Nature of Amount (Col 12): Reported CBDT nature code(s): {gross_natures}.",
             f"5. Source Evidence: Full monthly statements and SBI Card rate sheets are cross-verified and indexed in Sheet 1."
         ]
+        if a2.peak_notes:
+            notes.append("6. PEAK NOT FULLY VERIFIED: " + " ".join(a2.peak_notes))
+        elif a2.model_checks:
+            notes.append(
+                f"6. Peak verified: cash + shares x close reproduces the account total printed on all "
+                f"{len(a2.model_checks)} statements ending in {cy}."
+            )
+        if a2.source_broker_details:
+            notes.append(
+                f"7. Broker address and ZIP were read from {a2.source_broker_details}; confirm them before filing."
+            )
         for idx, n in enumerate(notes, start=notes_row + 1):
             ws.cell(row=idx, column=1, value=n).font = self._font_small
 
