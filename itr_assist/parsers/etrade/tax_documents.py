@@ -1,4 +1,5 @@
 """E*TRADE / Morgan Stanley implementation of BaseTaxDocumentParser."""
+from datetime import date
 import re
 from typing import Optional
 from pypdf import PdfReader
@@ -10,8 +11,12 @@ from itr_assist.parsers.base import BaseTaxDocumentParser
 class ETradeTaxDocumentParser(BaseTaxDocumentParser):
     """Parses Form 1042-S PDF for US gross income and federal tax withheld."""
 
-    def parse(self, file_path: str) -> Optional[Form1042SData]:
-        """Extract Form 1042-S fields from E*TRADE / Morgan Stanley PDF."""
+    def parse(self, file_path: str, calendar_year_hint: Optional[int] = None) -> Optional[Form1042SData]:
+        """Extract Form 1042-S fields from E*TRADE / Morgan Stanley PDF.
+
+        calendar_year_hint is used only if the document's own "<year> Form 1042-S" header
+        cannot be matched.
+        """
         reader = PdfReader(file_path)
 
         full_text = ""
@@ -19,7 +24,8 @@ class ETradeTaxDocumentParser(BaseTaxDocumentParser):
             full_text += (page.extract_text() or "") + "\n"
 
         cal_year_m = re.search(r'(20\d\d)\s+Form 1042-S', full_text)
-        cal_year = int(cal_year_m.group(1)) if cal_year_m else 2025
+        fallback_year = calendar_year_hint if calendar_year_hint is not None else date.today().year
+        cal_year = int(cal_year_m.group(1)) if cal_year_m else fallback_year
 
         gross_inc = 0.0
         tax_withheld = 0.0

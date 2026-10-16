@@ -214,17 +214,17 @@ class TestITRWorkbookGenerator(unittest.TestCase):
         self.assertAlmostEqual(ws["J5"].value, 2800.0, places=1)  # Peak USD (Working)
         self.assertEqual(ws["K5"].value, "2025-12-31")             # Peak Date
         self.assertAlmostEqual(ws["L5"].value, 89.47, places=1)    # Peak Rate
-        self.assertIn("E*TRADE Statement", ws["M5"].value)         # Source Peak
+        self.assertIn("(E*TRADE) Statement", ws["M5"].value)       # Source Peak (broker name + "Statement")
         # Closing Balance Group: Statutory Col 10 followed immediately by Working cols
         self.assertEqual(ws["N5"].value, 250516)  # Closing INR
         self.assertAlmostEqual(ws["O5"].value, 2800.0, places=1)  # Closing USD (Working)
         self.assertEqual(ws["P5"].value, "2025-12-31")             # Closing Date
         self.assertAlmostEqual(ws["Q5"].value, 89.47, places=1)    # Closing Rate
-        self.assertIn("E*TRADE Statement", ws["R5"].value)         # Source Closing
+        self.assertIn("(E*TRADE) Statement", ws["R5"].value)       # Source Closing
         # Gross Amount Group: Statutory Col 11 followed immediately by Working cols
-        self.assertEqual(ws["S5"].value, 8736)    # Gross Amount INR
+        self.assertEqual(ws["S5"].value, 8718)    # Gross Amount INR (Rule 115 preceding-month-end rate)
         self.assertAlmostEqual(ws["T5"].value, 100.0, places=1)    # Gross USD (Working)
-        self.assertIn("E*TRADE CY 2025 Statement", ws["U5"].value) # Source Gross
+        self.assertIn("(E*TRADE) CY 2025 Statement", ws["U5"].value) # Source Gross - uses the actual broker_name + the real filing calendar year
         self.assertEqual(ws["V5"].value, "D")     # Nature of Amount (Col 12)
 
     def test_table_a3_content(self):
@@ -257,23 +257,30 @@ class TestITRWorkbookGenerator(unittest.TestCase):
         self.assertAlmostEqual(ws["X5"].value, 0.0, places=1)      # Dec 31 Close Price
         self.assertEqual(ws["Y5"].value, "2025-12-31")             # Dec 31 Date
         self.assertAlmostEqual(ws["Z5"].value, 89.47, places=1)    # Dec 31 SBI Rate
-        self.assertIn("Yahoo Finance", ws["AA5"].value)            # Source Closing
+        # This lot was sold before Dec 31, so closing is a real $0 by definition, not a Yahoo
+        # Finance lookup - the source text must say so plainly rather than implying a (never
+        # made) market data fetch returned $0.
+        self.assertIn("sold before Dec 31", ws["AA5"].value)       # Source Closing
 
         # Gross Dividends & Sold Lot Flag
         self.assertEqual(ws["AB5"].value, 1229)                    # Gross Dividends INR (Col 11)
         self.assertAlmostEqual(ws["AC5"].value, 14.29, places=1)   # Gross Dividends USD (Working)
         self.assertEqual(ws["AE5"].value, 0)                       # Gross Proceeds INR (Col 12)
-        self.assertIn("Sold Lot", ws["AF4"].value)                 # Sold Lot Header
-        self.assertEqual(ws["AF5"].value, "YES (Sold 2026)")       # Sold Lot Flag
+        self.assertAlmostEqual(ws["AF5"].value, 0.0, places=1)     # Gross Proceeds USD (Working)
+        # This lot has no matching sale, so source_proceeds is "" - openpyxl stores an
+        # empty-string cell value as None, not "".
+        self.assertIsNone(ws["AG5"].value)                         # Proceeds Source (Working, empty - no sale)
+        self.assertIn("Sold Lot", ws["AH4"].value)                 # Sold Lot Header
+        self.assertEqual(ws["AH5"].value, "YES (Sold 2025)")       # Sold Lot Flag - real disposal_date (2025-06-15) year, not a hardcoded guess
 
-        # Check total formulas on row 8
-        self.assertEqual(ws["J8"].value, "=SUM(J5:J7)")            # Initial Value INR Total
-        self.assertEqual(ws["K8"].value, "=SUM(K5:K7)")            # Initial Cost USD Total
-        self.assertEqual(ws["L8"].value, "=SUM(L5:L7)")            # Shares Total
-        self.assertEqual(ws["P8"].value, "=SUM(P5:P7)")            # Peak Balance INR Total
-        self.assertEqual(ws["Q8"].value, "=SUM(Q5:Q7)")            # Peak Value USD Total
-        self.assertEqual(ws["V8"].value, "=SUM(V5:V7)")            # Closing Balance INR Total
-        self.assertEqual(ws["W8"].value, "=SUM(W5:W7)")            # Closing Value USD Total
+        # Totals are stored as values, not uncached formulas, so previews/data-only readers
+        # show them before desktop Excel has recalculated the workbook.
+        for col in ("J", "K", "L", "P", "Q", "V", "W", "AE", "AF"):
+            self.assertAlmostEqual(
+                ws[f"{col}8"].value,
+                sum(ws[f"{col}{row}"].value or 0 for row in range(5, 8)),
+                places=2,
+            )
 
     def test_sbi_rate_register_content(self):
         ws = self.wb["Audit_SBI_TTBR_Register"]
@@ -296,24 +303,24 @@ class TestITRWorkbookGenerator(unittest.TestCase):
         self.assertEqual(ws["E7"].value, 2224)  # Up16Of9To15Of12
         self.assertEqual(ws["E8"].value, 0)     # Up16Of12To15Of3
         self.assertEqual(ws["E9"].value, 0)     # Up16Of3To31Of3
-        self.assertEqual(ws["E10"].value, "=SUM(E5:E9)")
+        self.assertEqual(ws["E10"].value, 6544)
 
         # Verify transaction table has source document citation on row 15
-        self.assertIn("E*TRADE Statement", ws["M15"].value)
+        self.assertIn("(E*TRADE) Statement", ws["M15"].value)
 
     def test_schedule_fsi_and_tr_content(self):
         ws_fsi = self.wb["Schedule_FSI"]
         self.assertEqual(ws_fsi["E5"].value, 6544)  # Income outside India
-        self.assertEqual(ws_fsi["F5"].value, 1643)  # Tax paid outside India
-        self.assertEqual(ws_fsi["H5"].value, 1643)  # Relief available
+        self.assertEqual(ws_fsi["F5"].value, 1636)  # Tax paid outside India (Rule 128(5)(ii) preceding-month-end rate)
+        self.assertEqual(ws_fsi["H5"].value, 1636)  # Relief available
         self.assertEqual(ws_fsi["I5"].value, "Article 10")
         self.assertAlmostEqual(ws_fsi["J5"].value, 75.0, places=1)  # Income USD
         self.assertAlmostEqual(ws_fsi["K5"].value, 18.75, places=1) # Tax USD
         self.assertIn("Form 1042-S", ws_fsi["M5"].value)
 
         ws_tr = self.wb["Schedule_TR"]
-        self.assertEqual(ws_tr["D5"].value, 1643)  # Total tax paid
-        self.assertEqual(ws_tr["E5"].value, 1643)  # Relief available
+        self.assertEqual(ws_tr["D5"].value, 1636)  # Total tax paid
+        self.assertEqual(ws_tr["E5"].value, 1636)  # Relief available
         self.assertEqual(ws_tr["F5"].value, "90")
         self.assertAlmostEqual(ws_tr["G5"].value, 18.75, places=1)  # Tax USD
         self.assertIn("Form 1042-S", ws_tr["I5"].value)

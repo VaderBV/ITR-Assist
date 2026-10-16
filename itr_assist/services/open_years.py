@@ -25,6 +25,18 @@ def fy_to_ay(fy_str: str) -> str:
     return fy_str
 
 
+def fy_to_calendar_year(fy_str: str) -> int:
+    """Return the first (April-starting) calendar year of an FY string (e.g. '2025-26' -> 2025).
+
+    This is the single source of truth other modules should use instead of hardcoding a
+    specific calendar year, so the tool works correctly for whichever AY/FY the user selects.
+    """
+    parts = fy_str.split("-")
+    if len(parts) == 2 and len(parts[0]) == 4:
+        return int(parts[0])
+    raise ValueError(f"Could not parse calendar year from FY string: '{fy_str}'")
+
+
 def get_statutory_open_years(ref_date: date = None, max_years: int = 5) -> Tuple[List[str], List[str]]:
     """Compute legally open AYs and FYs under Section 139 based on current date.
     

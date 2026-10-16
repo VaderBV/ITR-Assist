@@ -24,7 +24,8 @@ class StatutoryRuleValidator:
         self.sbi = sbi_service
 
     def validate_rule_115_dividends(self, os_result: ScheduleOSResult) -> List[ValidationRuleResult]:
-        """Validate that Schedule OS foreign dividends convert at SBI TTBR on last day of preceding month (Rule 115(2)(c))."""
+        """Validate that Schedule OS foreign dividends convert at SBI TTBR on last day of preceding month
+        (Explanation to Rule 115, clause (e))."""
         results: List[ValidationRuleResult] = []
         for idx, item in enumerate(os_result.items, 1):
             expected_preceding_month_end, expected_rate = self.sbi.get_rule_115_dividend_rate(item.pay_date)
@@ -36,7 +37,7 @@ class StatutoryRuleValidator:
                     ValidationRuleResult(
                         rule_id=f"STAT-115-DATE-{idx:02d}",
                         category=RuleCategory.STATUTORY_RULES,
-                        authority="Income-tax Rules, 1962 - Rule 115(2)(c)",
+                        authority="Income-tax Rules, 1962 - Explanation to Rule 115, clause (e)",
                         title=f"Rule 115 Preceding Month-End Date Verification ({item.pay_date})",
                         description="Mandates conversion of foreign dividend at SBI TTBR on the last day of the month preceding receipt.",
                         severity=Severity.STATUTORY_ERROR,
@@ -52,7 +53,7 @@ class StatutoryRuleValidator:
                     ValidationRuleResult(
                         rule_id=f"STAT-115-DATE-{idx:02d}",
                         category=RuleCategory.STATUTORY_RULES,
-                        authority="Income-tax Rules, 1962 - Rule 115(2)(c)",
+                        authority="Income-tax Rules, 1962 - Explanation to Rule 115, clause (e)",
                         title=f"Rule 115 Preceding Month-End Date Verification ({item.pay_date})",
                         description="Mandates conversion of foreign dividend at SBI TTBR on the last day of the month preceding receipt.",
                         severity=Severity.STATUTORY_ERROR,
@@ -70,7 +71,7 @@ class StatutoryRuleValidator:
                     ValidationRuleResult(
                         rule_id=f"STAT-115-RATE-{idx:02d}",
                         category=RuleCategory.STATUTORY_RULES,
-                        authority="Income-tax Rules, 1962 - Rule 115(2)(c)",
+                        authority="Income-tax Rules, 1962 - Explanation to Rule 115, clause (e)",
                         title=f"Rule 115 Exchange Rate & Conversion Accuracy ({item.pay_date})",
                         description="Mandates computation of Schedule OS dividend at verified SBI TTBR.",
                         severity=Severity.STATUTORY_ERROR,
@@ -86,7 +87,7 @@ class StatutoryRuleValidator:
                     ValidationRuleResult(
                         rule_id=f"STAT-115-RATE-{idx:02d}",
                         category=RuleCategory.STATUTORY_RULES,
-                        authority="Income-tax Rules, 1962 - Rule 115(2)(c)",
+                        authority="Income-tax Rules, 1962 - Explanation to Rule 115, clause (e)",
                         title=f"Rule 115 Exchange Rate & Conversion Accuracy ({item.pay_date})",
                         description="Mandates computation of Schedule OS dividend at verified SBI TTBR.",
                         severity=Severity.STATUTORY_ERROR,
@@ -101,12 +102,13 @@ class StatutoryRuleValidator:
         return results
 
     def validate_rule_128_ftc(self, os_result: ScheduleOSResult, ftc: FTCResult) -> List[ValidationRuleResult]:
-        """Validate that foreign tax credit converts at SBI TTBR on the exact date of deduction (Rule 128(8))."""
+        """Validate that foreign tax credit converts at the SBI TTBR of the last day of the month
+        preceding the month tax was paid/deducted (Rule 128(5)(ii))."""
         results: List[ValidationRuleResult] = []
         expected_total_tax_inr = 0
 
         for idx, item in enumerate(os_result.items, 1):
-            expected_pay_rate = self.sbi.get_rate(item.pay_date)
+            _, expected_pay_rate = self.sbi.get_rule_128_rate(item.pay_date)
             expected_tax_inr = round(item.tax_usd * expected_pay_rate)
             expected_total_tax_inr += expected_tax_inr
 
@@ -115,9 +117,9 @@ class StatutoryRuleValidator:
                     ValidationRuleResult(
                         rule_id=f"STAT-128-RATE-{idx:02d}",
                         category=RuleCategory.STATUTORY_RULES,
-                        authority="Income-tax Rules, 1962 - Rule 128(8)",
-                        title=f"Rule 128(8) Deduction Date Exchange Rate ({item.pay_date})",
-                        description="Foreign tax credit conversion must use SBI TTBR on the date of deduction of tax.",
+                        authority="Income-tax Rules, 1962 - Rule 128(5)(ii)",
+                        title=f"Rule 128(5)(ii) Preceding Month-End Exchange Rate ({item.pay_date})",
+                        description="Foreign tax credit conversion must use SBI TTBR on the last day of the month preceding the month tax was paid/deducted.",
                         severity=Severity.STATUTORY_ERROR,
                         status=RuleStatus.FAILED,
                         details=f"Tax withheld on {item.pay_date} ₹{item.tax_inr} differs from expected ₹{expected_tax_inr} (${item.tax_usd:.2f} @ ₹{expected_pay_rate:.2f}).",
@@ -131,12 +133,12 @@ class StatutoryRuleValidator:
                     ValidationRuleResult(
                         rule_id=f"STAT-128-RATE-{idx:02d}",
                         category=RuleCategory.STATUTORY_RULES,
-                        authority="Income-tax Rules, 1962 - Rule 128(8)",
-                        title=f"Rule 128(8) Deduction Date Exchange Rate ({item.pay_date})",
-                        description="Foreign tax credit conversion must use SBI TTBR on the date of deduction of tax.",
+                        authority="Income-tax Rules, 1962 - Rule 128(5)(ii)",
+                        title=f"Rule 128(5)(ii) Preceding Month-End Exchange Rate ({item.pay_date})",
+                        description="Foreign tax credit conversion must use SBI TTBR on the last day of the month preceding the month tax was paid/deducted.",
                         severity=Severity.STATUTORY_ERROR,
                         status=RuleStatus.PASSED,
-                        details=f"Tax withheld on {item.pay_date} ₹{item.tax_inr} correctly converted at date-of-deduction TTBR ₹{expected_pay_rate:.2f}.",
+                        details=f"Tax withheld on {item.pay_date} ₹{item.tax_inr} correctly converted at preceding-month-end TTBR ₹{expected_pay_rate:.2f}.",
                         field_name="tax_inr",
                         expected=str(expected_tax_inr),
                         actual=str(item.tax_inr),

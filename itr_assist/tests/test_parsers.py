@@ -128,7 +128,11 @@ class TestDocumentParsers(unittest.TestCase):
         mock_pdf_reader.return_value.pages = [p1, p2]
 
         parser = ETradeStatementParser()
-        summaries, dividends = parser.parse(["dummy_stmt.pdf"])
+        # page2_text (the dividend activity page) has no "CLIENT STATEMENT ... For the Period"
+        # header of its own, so the parser falls back to calendar_year_hint - exactly what this
+        # fixture's year (2025) is for. Without a hint, it would fall back to today's year,
+        # which is why this must be passed explicitly rather than relying on an implicit default.
+        summaries, dividends, sales = parser.parse(["dummy_stmt.pdf"], calendar_year_hint=2025)
 
         self.assertEqual(len(summaries), 1)
         self.assertEqual(summaries[0].beginning_value_usd, 2400.0)
@@ -142,6 +146,40 @@ class TestDocumentParsers(unittest.TestCase):
         self.assertEqual(dividends[0].gross_amount_usd, 25.0)
         self.assertEqual(dividends[0].tax_withheld_usd, 6.25)
         self.assertEqual(dividends[0].symbol, "ACME CORPORATION")
+
+    @patch("itr_assist.parsers.etrade.statements.PdfReader")
+    def test_parse_statements_pdf_sale_transaction(self, mock_pdf_reader):
+        """Test extraction of a sell transaction line.
+
+        This wording is copied verbatim (symbol/dates/amounts changed) from the real raw
+        pypdf text of an actual Morgan Stanley/E*TRADE "CASH FLOW ACTIVITY BY DATE" table -
+        confirmed against two real statements for two real sales, cross-checked against each
+        sale's separate Trade Confirmation document. The sold row's description/comments can
+        wrap onto their own line(s) before the quantity/price/credits line, and the $ sign on
+        those numbers is present on some statements and absent on others (both real).
+        """
+        page_text = (
+            "CLIENT STATEMENT For the Period June 1-30, 2025 Page 1\n"
+            "ACTIVITY\n"
+            "CASH FLOW ACTIVITY BY DATE\n"
+            "Activity\nDate\nSettlement\nDate Activity Type Description Comments Quantity Price Credits/(Debits)\n"
+            "6/10 6/11 Sold ACME CORPORATION ACTED AS AGENT\nUNSOLICITED TRADE\n4.000 120.0000 478.20\n"
+        )
+        p1 = MagicMock()
+        p1.extract_text.return_value = page_text
+        mock_pdf_reader.return_value.pages = [p1]
+
+        parser = ETradeStatementParser()
+        _, _, sales = parser.parse(["dummy_stmt.pdf"], symbol_hint="ACME", calendar_year_hint=2025)
+
+        self.assertEqual(len(sales), 1)
+        self.assertEqual(sales[0].sale_date, date(2025, 6, 10))
+        self.assertEqual(sales[0].quantity, 4.0)
+        self.assertEqual(sales[0].price_usd, 120.0)
+        # Gross = quantity * price (480.00), NOT the statement's net-of-commission
+        # Credits/(Debits) figure (478.20) - confirmed against a real Trade Confirmation.
+        self.assertEqual(sales[0].gross_proceeds_usd, 480.0)
+        self.assertEqual(sales[0].symbol, "ACME")
 
     @patch("pandas.read_excel")
     def test_parse_benefit_history_excel(self, mock_read_excel):
@@ -182,6 +220,7 @@ class TestDocumentParsers(unittest.TestCase):
                 "Grant Number": "G100",
                 "Vest Date": "2024-05-15",
                 "Vested Qty..1": 15.0,
+                "Released Qty": 10.0,  # 5 shares withheld for tax at vest
                 "Sellable Qty..1": 10.0,
                 "Total Taxes Paid": "$500.00",
             },

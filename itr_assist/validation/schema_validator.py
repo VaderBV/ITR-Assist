@@ -94,27 +94,30 @@ class CBDTSchemaValidator:
 
     def validate_table_a2(self, a2: ScheduleFATableA2Result) -> List[ValidationRuleResult]:
         """Validate Table A2 Custodial Account against DtlsForeignCustodialAcc."""
-        payload = {
-            "CountryName": a2.country_name,
-            "CountryCodeExcludingIndia": a2.country_code,
-            "FinancialInstName": a2.financial_inst_name,
-            "FinancialInstAddress": a2.financial_inst_address,
-            "ZipCode": a2.zip_code,
-            "AccountNumber": a2.account_number,
-            "Status": a2.status,
-            "AccOpenDate": a2.account_open_date,
-            "PeakBalanceDuringPeriod": a2.peak_balance_inr,
-            "ClosingBalance": a2.closing_balance_inr,
-            "GrossAmtPaidCredited": a2.gross_amount_paid_credited_inr,
-            "NatureOfAmount": a2.nature_of_amount,
-        }
-        return self._validate_subschema(
-            subschema_ref="DtlsForeignCustodialAcc",
-            payload=payload,
-            rule_prefix="SCHEMA-FA-A2",
-            schedule_name="Schedule FA Table A2",
-            item_id=f"[{a2.account_number}]",
-        )
+        results: List[ValidationRuleResult] = []
+        for index, gross in enumerate(a2.gross_amounts, start=1):
+            payload = {
+                "CountryName": a2.country_name,
+                "CountryCodeExcludingIndia": a2.country_code,
+                "FinancialInstName": a2.financial_inst_name,
+                "FinancialInstAddress": a2.financial_inst_address,
+                "ZipCode": a2.zip_code,
+                "AccountNumber": a2.account_number,
+                "Status": a2.status,
+                "AccOpenDate": a2.account_open_date,
+                "PeakBalanceDuringPeriod": a2.peak_balance_inr,
+                "ClosingBalance": a2.closing_balance_inr,
+                "GrossAmtPaidCredited": gross.amount_inr,
+                "NatureOfAmount": gross.nature,
+            }
+            results.extend(self._validate_subschema(
+                subschema_ref="DtlsForeignCustodialAcc",
+                payload=payload,
+                rule_prefix="SCHEMA-FA-A2",
+                schedule_name="Schedule FA Table A2",
+                item_id=f"[{a2.account_number}:{index}:{gross.nature}]",
+            ))
+        return results
 
     def validate_table_a3(self, a3_lots: List[ScheduleFATableA3LotResult]) -> List[ValidationRuleResult]:
         """Validate all Table A3 Equity lots against DtlsForeignEquityDebtInterest."""

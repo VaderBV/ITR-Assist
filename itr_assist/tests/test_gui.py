@@ -8,6 +8,7 @@ import pytest
 
 from itr_assist.gui import ITRAssistGUI
 from itr_assist.services.valuation import (
+    A2GrossAmount,
     DividendTaxResult,
     FTCResult,
     ScheduleFATableA2Result,
@@ -137,8 +138,16 @@ def test_gui_generation_success_callback(gui_app: ITRAssistGUI):
         closing_balance_inr=360844,
         closing_date=date(2025, 12, 31),
         closing_rate_inr=89.473,
-        gross_amount_paid_credited_inr=6174,
-        nature_of_amount="Gross Dividends",
+        gross_amounts=[
+            A2GrossAmount(
+                nature="D",
+                amount_usd=70.0,
+                amount_inr=6174,
+                rate_inr=88.20,
+                rate_date=date(2025, 12, 31),
+                source="Synthetic GUI fixture",
+            )
+        ],
     )
 
     a3_dummy = [
@@ -168,6 +177,7 @@ def test_gui_generation_success_callback(gui_app: ITRAssistGUI):
             gross_dividends_inr=956,
             gross_proceeds_inr=0,
             is_sold_lot=True,
+            disposal_date=date(2025, 8, 20),
             initial_cost_usd=590.22,
             peak_balance_usd=544.08,
             closing_balance_usd=444.72,
@@ -179,6 +189,7 @@ def test_gui_generation_success_callback(gui_app: ITRAssistGUI):
         symbol="ACME",
         gross_usd=13.0,
         tax_usd=3.25,
+        tax_deduction_date=date(2025, 6, 6),
         preceding_month_end=date(2025, 5, 30),
         rule_115_rate=85.00,
         gross_inr=1105,
@@ -231,7 +242,7 @@ def test_gui_generation_success_callback(gui_app: ITRAssistGUI):
     # Check sold lot label in A3 Tree (last column 15)
     a3_values = gui_app.a3_tree.item(gui_app.a3_tree.get_children()[0])["values"]
     assert "ACME-ESPP-20240603" in str(a3_values[0])
-    assert "YES (Sold 2026)" in str(a3_values[15])
+    assert "YES (Sold 2025)" in str(a3_values[15])  # real disposal_date (2025-08-20) year, not a hardcoded guess
 
 
 def test_gui_generation_error_callback(gui_app: ITRAssistGUI):

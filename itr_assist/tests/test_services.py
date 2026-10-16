@@ -42,10 +42,18 @@ class TestSBIRateService(unittest.TestCase):
         self.assertEqual(rule115_rate, self.sbi.get_rate(date(2025, 5, 31)))
 
     def test_rule_128_rate(self):
-        # Rule 128 uses TTBR on transaction/specified date
+        # Rule 128(5)(ii): tax deducted 2025-06-05 -> rate should be for last day of the
+        # PRECEDING month (2025-05-31), not the deduction date itself. Verified against the
+        # primary rule text: "...telegraphic transfer buying rate on the last day of the month
+        # immediately preceding the month in which such tax has been paid or deducted."
         date_used, rule128_rate = self.sbi.get_rule_128_rate(date(2025, 6, 5))
-        self.assertEqual(date_used, date(2025, 6, 5))
-        self.assertEqual(rule128_rate, self.sbi.get_rate(date(2025, 6, 5)))
+        self.assertEqual(date_used, date(2025, 5, 31))
+        self.assertEqual(rule128_rate, self.sbi.get_rate(date(2025, 5, 31)))
+
+    def test_rule_128_rate_january_rolls_back_to_prior_year(self):
+        # Tax deducted in January must roll back to 31 December of the PRIOR year.
+        date_used, _ = self.sbi.get_rule_128_rate(date(2025, 1, 10))
+        self.assertEqual(date_used, date(2024, 12, 31))
 
 
 class TestMarketDataService(unittest.TestCase):
@@ -189,8 +197,8 @@ class TestValuationEngine(unittest.TestCase):
         self.assertEqual(res.closing_balance_usd, 2800.0)
         self.assertGreater(res.closing_balance_inr, 200000)
         self.assertGreaterEqual(res.peak_balance_inr, res.closing_balance_inr)
-        self.assertEqual(res.nature_of_amount, "D")
-        self.assertGreater(res.gross_amount_paid_credited_inr, 5000)
+        self.assertEqual(res.gross_amounts[0].nature, "D")
+        self.assertGreater(res.gross_amounts[0].amount_inr, 5000)
 
     def test_schedule_os_and_ftc_computation(self):
         """Verify Schedule OS advance tax buckets and Form 67 FTC claim."""

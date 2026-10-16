@@ -9,6 +9,7 @@ from itr_assist.reconciliation.lot_ledger import LotLedger
 from itr_assist.reconciliation.verifier import DocumentVerifier
 from itr_assist.reports.excel_generator import ITRWorkbookGenerator
 from itr_assist.services.market_data import MarketDataService
+from itr_assist.services.open_years import fy_to_calendar_year
 from itr_assist.services.sbi_rates import SBIRateService
 from itr_assist.services.valuation import ValuationEngine
 
@@ -40,6 +41,12 @@ def main() -> int:
 
     args = parser.parse_args()
 
+    # Single source of truth for "which calendar year is this filing about" - every date
+    # literal downstream is derived from this instead of being hardcoded.
+    cy = fy_to_calendar_year(args.fy)
+    next_cy = cy + 1
+    cy_str, next_cy_str = str(cy), str(next_cy)
+
     print("=" * 75)
     print("  ITR-2 FOREIGN ASSETS & TAX RELIEF AUTOMATION UTILITY")
     print(f"  Assessment Year: {args.ay}  |  Financial Year: {args.fy}")
@@ -47,8 +54,8 @@ def main() -> int:
 
     benefit_file = args.benefit_file
     holdings_file = args.holdings_file
-    stmt_2025 = args.stmt_cy
-    stmt_2026 = args.stmt_fy
+    stmt_cy_file = args.stmt_cy
+    stmt_fy_end_file = args.stmt_fy
     tax_doc = args.tax_doc
 
     # Auto-discover files if --data-dir is supplied, without hardcoding proprietary filenames
@@ -60,18 +67,18 @@ def main() -> int:
                 benefit_file = fpath
             elif not holdings_file and (("holding" in fl or "status" in fl) and fl.endswith((".xlsx", ".xls"))):
                 holdings_file = fpath
-            elif not stmt_2025 and ("statement" in fl and "2025" in fl and fl.endswith(".pdf")):
-                stmt_2025 = fpath
-            elif not stmt_2026 and ("statement" in fl and ("2026" in fl or "march" in fl or "q4" in fl) and fl.endswith(".pdf")):
-                stmt_2026 = fpath
+            elif not stmt_cy_file and ("statement" in fl and cy_str in fl and fl.endswith(".pdf")):
+                stmt_cy_file = fpath
+            elif not stmt_fy_end_file and ("statement" in fl and (next_cy_str in fl or "march" in fl or "q4" in fl) and fl.endswith(".pdf")):
+                stmt_fy_end_file = fpath
             elif not tax_doc and (("1042" in fl or "tax" in fl) and fl.endswith(".pdf")):
                 tax_doc = fpath
 
     missing = []
     if not benefit_file: missing.append("--benefit-file")
     if not holdings_file: missing.append("--holdings-file")
-    if not stmt_2025: missing.append("--stmt-cy")
-    if not stmt_2026: missing.append("--stmt-fy")
+    if not stmt_cy_file: missing.append("--stmt-cy")
+    if not stmt_fy_end_file: missing.append("--stmt-fy")
     if not tax_doc: missing.append("--tax-doc")
     if missing:
         print(f"\n[ERROR] Missing required input files: {', '.join(missing)}")
@@ -80,7 +87,7 @@ def main() -> int:
 
     # 1. Resolve Broker Adapter
     print("\n[1/5] Ingesting documents via modular broker adapter...")
-    adapter = BrokerParserFactory.auto_detect(stmt_2025)
+    adapter = BrokerParserFactory.auto_detect(stmt_cy_file)
     print(f"      Selected Adapter: {adapter.broker_name}")
 
     all_lots = adapter.parse_benefit_history(benefit_file)
@@ -90,10 +97,12 @@ def main() -> int:
     print(f"      • Current Holdings: Ingested {len(holdings_lots)} active snapshot lots")
 
     primary_symbol = all_lots[0].symbol if all_lots else None
-    statement_summaries, dividends = adapter.parse_statements([stmt_2025, stmt_2026], symbol_hint=primary_symbol)
-    print(f"      • Client Statements: Extracted {len(statement_summaries)} period summaries & {len(dividends)} dividends")
+    statement_summaries, dividends, sales = adapter.parse_statements(
+        [stmt_cy_file, stmt_fy_end_file], symbol_hint=primary_symbol, calendar_year_hint=cy
+    )
+    print(f"      • Client Statements: Extracted {len(statement_summaries)} period summaries, {len(dividends)} dividends & {len(sales)} sale transactions")
 
-    form_1042s = adapter.parse_tax_documents(tax_doc)
+    form_1042s = adapter.parse_tax_documents(tax_doc, calendar_year_hint=cy)
     print(f"      • Form 1042-S: Verified Gross ${form_1042s.gross_dividend_usd:.2f}, Tax ${form_1042s.tax_withheld_usd:.2f}")
 
     # Auto-detect Taxpayer Name and PAN from Form 1042-S if not explicitly passed
@@ -103,6 +112,10 @@ def main() -> int:
     # 2. Reconstruct Chronological Lot Ledger
     print("\n[2/5] Reconstructing chronological lot lifecycle & sold lots...")
     ledger = LotLedger(all_lots)
+    # Must run before verify_holdings()/get_schedule_fa_lots(): this mutates the ledger's lots
+    # (splitting partially-sold lots, setting disposal dates) so every later step sees the
+    # correct post-sale state instead of treating a sold lot as still fully held.
+    enriched_sales = ledger.allocate_sales(sales)
     verifier = DocumentVerifier(ledger, holdings_lots)
     report = verifier.verify_holdings()
 
@@ -112,8 +125,8 @@ def main() -> int:
     for sl in report.sold_lots:
         print(f"        -> Lot {sl.lot_id}: {sl.net_shares} shs acquired {sl.acquisition_date}, sold {sl.disposal_date}")
 
-    fa_lots = ledger.get_schedule_fa_lots(calendar_year=2025)
-    print(f"      • Schedule FA Scope    : {len(fa_lots)} lots active in CY 2025")
+    fa_lots = ledger.get_schedule_fa_lots(calendar_year=cy)
+    print(f"      • Schedule FA Scope    : {len(fa_lots)} lots active in CY {cy}")
 
     # 3. Load External Market Data & SBI TTBR
     print("\n[3/5] Loading historical SBI TT Buying Rates and Yahoo Finance stock data...")
@@ -155,12 +168,12 @@ def main() -> int:
         account_number=account_num
     )
 
-    dec_summary = next(s for s in statement_summaries if s.end_date == date(2025, 12, 31))
-    a2_res = engine.compute_table_a2(2025, dec_summary, dividends)
-    a3_res = engine.compute_table_a3(2025, dividends)
+    dec_summary = next(s for s in statement_summaries if s.end_date == date(cy, 12, 31))
+    a2_res = engine.compute_table_a2(cy, dec_summary, dividends)
+    a3_res = engine.compute_table_a3(cy, dividends, enriched_sales)
 
-    fy_divs = [d for d in dividends if date(2025, 4, 1) <= d.pay_date <= date(2026, 3, 31)]
-    os_res, ftc_res = engine.compute_schedule_os_and_ftc(fy_divs)
+    fy_divs = [d for d in dividends if date(cy, 4, 1) <= d.pay_date <= date(next_cy, 3, 31)]
+    os_res, ftc_res = engine.compute_schedule_os_and_ftc(fy_divs, calendar_year=cy)
 
     print(f"      • Schedule FA Table A2 Peak Balance   : ₹ {a2_res.peak_balance_inr:,}")
     print(f"      • Schedule FA Table A2 Closing Balance: ₹ {a2_res.closing_balance_inr:,}")
@@ -173,19 +186,22 @@ def main() -> int:
     print("\n[4.5/5] Executing CBDT Statutory & Schema Rules Validation Engine...")
     from itr_assist.validation import ValidationEngine
     validator = ValidationEngine(sbi_service=sbi)
-    cy_div_usd = sum(d.gross_amount_usd for d in dividends if d.pay_date.year == 2025)
-    cy_tax_usd = sum(d.tax_withheld_usd for d in dividends if d.pay_date.year == 2025)
+    cy_div_usd = sum(d.gross_amount_usd for d in dividends if d.pay_date.year == cy)
+    cy_tax_usd = sum(d.tax_withheld_usd for d in dividends if d.pay_date.year == cy)
     val_report = validator.validate(
         a2=a2_res,
         a3_lots=a3_res,
         os_result=os_res,
         ftc=ftc_res,
-        recon=report,
         form_1042s=form_1042s,
         cy_dividends_usd=cy_div_usd,
         cy_tax_withheld_usd=cy_tax_usd,
         is_resident=True,
         part_b_tti_sl19_yes=True,
+        sales=enriched_sales,
+        statement_summaries=statement_summaries,
+        lots=ledger.lots,
+        calendar_year=cy,
     )
     sc = val_report.scorecard
     print(f"      • Total Rules Evaluated   : {sc.total_rules}")

@@ -17,6 +17,7 @@ from itr_assist.services.open_years import (
     ay_to_fy,
     fetch_open_assessment_years,
     fy_to_ay,
+    fy_to_calendar_year,
     get_statutory_open_years,
 )
 from itr_assist.services.sbi_rates import SBIRateService
@@ -399,6 +400,8 @@ class ITRAssistGUI:
 
         self._log(f"[Auto-Fill] Scanning directory: {folder}")
         found_count = 0
+        cy_hint = fy_to_calendar_year(self.var_fy.get())
+        next_cy_hint = cy_hint + 1
         try:
             for entry in os.listdir(folder):
                 full_p = os.path.join(folder, entry)
@@ -412,10 +415,10 @@ class ITRAssistGUI:
                 elif ("bystatus" in name_low or "holding" in name_low) and name_low.endswith((".xlsx", ".xls", ".csv")):
                     self.var_holdings.set(os.path.abspath(full_p))
                     found_count += 1
-                elif "statement" in name_low and "2025" in name_low and name_low.endswith(".pdf"):
+                elif "statement" in name_low and str(cy_hint) in name_low and name_low.endswith(".pdf"):
                     self.var_stmt_cy.set(os.path.abspath(full_p))
                     found_count += 1
-                elif "statement" in name_low and ("26" in name_low or "march" in name_low) and name_low.endswith(".pdf"):
+                elif "statement" in name_low and (str(next_cy_hint)[-2:] in name_low or "march" in name_low) and name_low.endswith(".pdf"):
                     self.var_stmt_fy.set(os.path.abspath(full_p))
                     found_count += 1
                 elif ("tax" in name_low or "1042" in name_low) and name_low.endswith(".pdf"):
@@ -490,6 +493,8 @@ class ITRAssistGUI:
         try:
             ay = self.var_ay.get()
             fy = self.var_fy.get()
+            cy = fy_to_calendar_year(fy)
+            next_cy = cy + 1
             output_file = self.var_output.get()
             taxpayer_name = self.var_taxpayer_name.get()
             pan = self.var_pan.get()
@@ -497,8 +502,8 @@ class ITRAssistGUI:
             # Retrieve individual file inputs
             benefit_file = self.var_benefit_history.get()
             holdings_file = self.var_holdings.get()
-            stmt_2025 = self.var_stmt_cy.get()
-            stmt_2026 = self.var_stmt_fy.get()
+            stmt_cy_file = self.var_stmt_cy.get()
+            stmt_fy_end_file = self.var_stmt_fy.get()
             tax_doc = self.var_tax_doc.get()
 
             self._log("=" * 75)
@@ -511,8 +516,8 @@ class ITRAssistGUI:
             for label, p in [
                 ("1. Benefit History", benefit_file),
                 ("2. Current Holdings", holdings_file),
-                ("3. Calendar Year Statements", stmt_2025),
-                ("4. Q4 / FY-End Statements", stmt_2026),
+                ("3. Calendar Year Statements", stmt_cy_file),
+                ("4. Q4 / FY-End Statements", stmt_fy_end_file),
                 ("5. Tax Document / 1042-S", tax_doc)
             ]:
                 if not os.path.isfile(p):
@@ -521,7 +526,7 @@ class ITRAssistGUI:
 
             # 1. Parse documents via broker adapter
             self._log("\n[1/5] Ingesting documents...")
-            adapter = BrokerParserFactory.auto_detect(stmt_2025)
+            adapter = BrokerParserFactory.auto_detect(stmt_cy_file)
             self._log(f"      Selected Broker Adapter: {adapter.broker_name}")
 
             all_lots = adapter.parse_benefit_history(benefit_file)
@@ -531,10 +536,12 @@ class ITRAssistGUI:
             self._log(f"      • Current Holdings: Ingested {len(holdings_lots)} active snapshot lots")
 
             primary_symbol = all_lots[0].symbol if all_lots else None
-            summaries, dividends = adapter.parse_statements([stmt_2025, stmt_2026], symbol_hint=primary_symbol)
-            self._log(f"      • Statements: Extracted {len(summaries)} period summaries & {len(dividends)} dividends")
+            summaries, dividends, sales = adapter.parse_statements(
+                [stmt_cy_file, stmt_fy_end_file], symbol_hint=primary_symbol, calendar_year_hint=cy
+            )
+            self._log(f"      • Statements: Extracted {len(summaries)} period summaries, {len(dividends)} dividends & {len(sales)} sale transactions")
 
-            form_1042s = adapter.parse_tax_documents(tax_doc)
+            form_1042s = adapter.parse_tax_documents(tax_doc, calendar_year_hint=cy)
             self._log(f"      • Form 1042-S: Verified Gross ${form_1042s.gross_dividend_usd:.2f}, Tax ${form_1042s.tax_withheld_usd:.2f}")
 
             # Auto-extract taxpayer name and PAN from Form 1042-S if not set
@@ -548,6 +555,10 @@ class ITRAssistGUI:
             # 2. Reconcile
             self._log("\n[2/5] Reconciling chronological lot ledger & sold lots...")
             ledger = LotLedger(all_lots)
+            # Must run before verify_holdings()/get_schedule_fa_lots(): mutates the ledger's
+            # lots (splitting partially-sold lots, setting disposal dates) so every later step
+            # sees the correct post-sale state.
+            enriched_sales = ledger.allocate_sales(sales)
             verifier = DocumentVerifier(ledger, holdings_lots)
             report = verifier.verify_holdings()
 
@@ -555,8 +566,8 @@ class ITRAssistGUI:
             self._log(f"      • Active shares: {report.total_reconstructed_shares:.1f} shs (matches holdings)")
             self._log(f"      • Sold lots detected: {report.sold_lots_count}")
 
-            fa_lots = ledger.get_schedule_fa_lots(calendar_year=2025)
-            self._log(f"      • Schedule FA lots for CY 2025: {len(fa_lots)}")
+            fa_lots = ledger.get_schedule_fa_lots(calendar_year=cy)
+            self._log(f"      • Schedule FA lots for CY {cy}: {len(fa_lots)}")
 
             # 3. Market & FX
             self._log("\n[3/5] Loading historical SBI TTBR rates & daily stock prices...")
@@ -582,30 +593,33 @@ class ITRAssistGUI:
                 broker_name=adapter.broker_name,
                 account_number=account_num
             )
-            dec_summary = next(s for s in summaries if s.end_date == date(2025, 12, 31))
-            a2_res = engine.compute_table_a2(2025, dec_summary, dividends)
-            a3_res = engine.compute_table_a3(2025, dividends)
+            dec_summary = next(s for s in summaries if s.end_date == date(cy, 12, 31))
+            a2_res = engine.compute_table_a2(cy, dec_summary, dividends)
+            a3_res = engine.compute_table_a3(cy, dividends, enriched_sales)
 
-            fy_divs = [d for d in dividends if date(2025, 4, 1) <= d.pay_date <= date(2026, 3, 31)]
-            os_res, ftc_res = engine.compute_schedule_os_and_ftc(fy_divs)
+            fy_divs = [d for d in dividends if date(cy, 4, 1) <= d.pay_date <= date(next_cy, 3, 31)]
+            os_res, ftc_res = engine.compute_schedule_os_and_ftc(fy_divs, calendar_year=cy)
 
             # 4.5 Statutory & Schema Rules Validation
             self._log("\n[4.5/5] Executing CBDT Statutory & Schema Rules Validation Engine...")
             from itr_assist.validation import ValidationEngine
             validator = ValidationEngine(sbi_service=sbi)
-            cy_div_usd = sum(d.gross_amount_usd for d in dividends if d.pay_date.year == 2025)
-            cy_tax_usd = sum(d.tax_withheld_usd for d in dividends if d.pay_date.year == 2025)
+            cy_div_usd = sum(d.gross_amount_usd for d in dividends if d.pay_date.year == cy)
+            cy_tax_usd = sum(d.tax_withheld_usd for d in dividends if d.pay_date.year == cy)
             val_report = validator.validate(
                 a2=a2_res,
                 a3_lots=a3_res,
                 os_result=os_res,
                 ftc=ftc_res,
-                recon=report,
                 form_1042s=form_1042s,
                 cy_dividends_usd=cy_div_usd,
                 cy_tax_withheld_usd=cy_tax_usd,
                 is_resident=True,
                 part_b_tti_sl19_yes=True,
+                sales=enriched_sales,
+                statement_summaries=summaries,
+                lots=ledger.lots,
+                calendar_year=cy,
             )
             sc = val_report.scorecard
             self._log(f"      • Rules Evaluated: {sc.total_rules}  |  Passed: {sc.passed}  |  Failed: {sc.failed}")
@@ -636,7 +650,7 @@ class ITRAssistGUI:
             self._log(f"Saved at: {self.last_generated_file}")
 
             # Populate UI elements
-            self.root.after(0, self._on_generation_success, a2_res, a3_res, os_res, ftc_res, val_report)
+            self.root.after(0, self._on_generation_success, a2_res, a3_res, os_res, ftc_res, val_report, cy, next_cy, fy)
 
         except Exception as exc:
             self._log(f"\nERROR: {exc}")
@@ -648,7 +662,10 @@ class ITRAssistGUI:
         a3_lots: List[ScheduleFATableA3LotResult],
         os_res: ScheduleOSResult,
         ftc_res: FTCResult,
-        val_report: Optional[Any] = None
+        val_report: Optional[Any] = None,
+        cy: int = 2025,
+        next_cy: int = 2026,
+        fy: str = "2025-26"
     ) -> None:
         """Callback on main thread upon success."""
         self.progress.stop()
@@ -661,10 +678,10 @@ class ITRAssistGUI:
         self.kpi_tree.delete(*self.kpi_tree.get_children())
         kpis = [
             ("Schedule FA (A2)", "Custodial Account Peak Balance", f"${a2.peak_balance_usd:,.2f}", f"₹ {a2.peak_balance_inr:,}", f"Peak on {a2.peak_date} @ SBI ₹{a2.peak_rate_inr:.2f} | {a2.source_peak[:40]}..."),
-            ("Schedule FA (A2)", "Custodial Account Closing Balance", f"${a2.closing_balance_usd:,.2f}", f"₹ {a2.closing_balance_inr:,}", f"Dec 31, 2025 @ SBI ₹{a2.closing_rate_inr:.2f} | {a2.source_closing[:40]}..."),
+            ("Schedule FA (A2)", "Custodial Account Closing Balance", f"${a2.closing_balance_usd:,.2f}", f"₹ {a2.closing_balance_inr:,}", f"Dec 31, {cy} @ SBI ₹{a2.closing_rate_inr:.2f} | {a2.source_closing[:40]}..."),
             ("Schedule FA (A3)", "Total Foreign Equity Closing Value", f"{len(a3_lots)} Lots", f"₹ {sum(l.closing_balance_inr for l in a3_lots):,}", "Includes Sold Lots | Initial/Peak/Close Provenance"),
-            ("Schedule OS", "Gross Foreign Dividends (FY 2025-26)", f"${sum(i.gross_usd for i in os_res.items):,.2f}", f"₹ {os_res.total_dividend_inr:,}", "Other Sources (5 Installments) | Preceding Month End TTBR"),
-            ("Schedule FSI / TR", "Foreign Taxes Paid Abroad (25%)", f"${sum(i.tax_usd for i in os_res.items):,.2f}", f"₹ {ftc_res.foreign_tax_paid_inr:,}", "Rule 128(8) Deduction Dates | Form 1042-S Box 7a"),
+            ("Schedule OS", f"Gross Foreign Dividends (FY {fy})", f"${sum(i.gross_usd for i in os_res.items):,.2f}", f"₹ {os_res.total_dividend_inr:,}", "Other Sources (5 Installments) | Preceding Month End TTBR"),
+            ("Schedule FSI / TR", "Foreign Taxes Paid Abroad (25%)", f"${sum(i.tax_usd for i in os_res.items):,.2f}", f"₹ {ftc_res.foreign_tax_paid_inr:,}", "Rule 128(5)(ii) Preceding Month-End Rate | Form 1042-S Box 7a"),
             ("Form 67 / TR", "FTC Relief Claimed u/s 90", f"${sum(i.tax_usd for i in os_res.items):,.2f}", f"₹ {ftc_res.tax_relief_claimed_inr:,}", "DTAA Article 10 | Form 1042-S Proof Attached"),
         ]
         if val_report:
@@ -681,7 +698,10 @@ class ITRAssistGUI:
         # Populate Table A3 Tree
         self.a3_tree.delete(*self.a3_tree.get_children())
         for l in a3_lots:
-            sold_txt = "YES (Sold 2026)" if getattr(l, "is_sold_lot", False) else "NO"
+            if getattr(l, "is_sold_lot", False):
+                sold_txt = f"YES (Sold {l.disposal_date.year})" if l.disposal_date else f"YES (Sold after {cy})"
+            else:
+                sold_txt = "NO"
             self.a3_tree.insert("", tk.END, values=(
                 l.lot_id,
                 l.acquisition_date.strftime("%Y-%m-%d"),

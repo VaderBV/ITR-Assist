@@ -1,4 +1,5 @@
 """Fully synthetic end-to-end integration test verifying the entire pipeline without local private data."""
+import calendar
 from datetime import date
 import os
 import tempfile
@@ -99,8 +100,23 @@ def synthetic_data():
     )
     holdings = [h_lot1, h_lot2]
 
-    # 3. Monthly Statement Summaries (12 months of CY 2025 + Q4 FY 2025-26)
+    # 3. Monthly Statement Summaries. History starts at the earliest lot's acquisition month
+    # (Dec 2023) so a sale in any month would be visible - the statement-coverage rule checks
+    # exactly this - then all 12 months of CY 2025, then Q4 of FY 2025-26.
     summaries = []
+    for year, month in [(2023, 12)] + [(2024, m) for m in range(1, 13)]:
+        summaries.append(
+            StatementPeriodSummary(
+                period_label=f"Period {month}/{year}",
+                start_date=date(year, month, 1),
+                end_date=date(year, month, calendar.monthrange(year, month)[1]),
+                beginning_value_usd=1400.0,
+                ending_value_usd=1500.0,
+                cash_balance_usd=40.0,
+                equities_value_usd=1460.0,
+                shares_held=15.0,
+            )
+        )
     for month in range(1, 13):
         start_d = date(2025, month, 1)
         end_d = date(2025, month, 28 if month == 2 else (30 if month in (4, 6, 9, 11) else 31))
@@ -187,6 +203,7 @@ def test_synthetic_valuation_and_workbook_generation(synthetic_data):
 
     # Populate mock prices for ACME in market data service
     mock_acme_prices = {
+        date(2025, 6, 13): {"open": 105.0, "high": 108.0, "low": 103.0, "close": 106.0},
         date(2025, 12, 31): {"open": 110.0, "high": 115.0, "low": 109.0, "close": 112.0},
         date(2025, 12, 10): {"open": 120.0, "high": 125.0, "low": 118.0, "close": 122.0},
     }
@@ -232,12 +249,17 @@ def test_synthetic_valuation_and_workbook_generation(synthetic_data):
         a3_lots=a3_lots,
         os_result=os_res,
         ftc=ftc_res,
-        recon=DocumentVerifier(ledger, synthetic_data["holdings"]).verify_holdings(),
         form_1042s=synthetic_data["form_1042s"],
         cy_dividends_usd=cy_div_usd,
         cy_tax_withheld_usd=cy_tax_usd,
+        statement_summaries=synthetic_data["summaries"],
+        lots=ledger.lots,
+        calendar_year=2025,
     )
-    assert val_report.scorecard.compute_status() == "100%_STATUTORILY_COMPLIANT"
+    coverage = next(r for r in val_report.results if r.rule_id == "INV-STATEMENT-COVERAGE")
+    assert coverage.status == RuleStatus.PASSED
+    failures = [(r.rule_id, r.details) for r in val_report.results if r.status != RuleStatus.PASSED]
+    assert val_report.scorecard.compute_status() == "100%_STATUTORILY_COMPLIANT", failures
 
     # 5. Excel Generation
     with tempfile.TemporaryDirectory() as tmpdir:

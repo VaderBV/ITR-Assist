@@ -8,9 +8,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Distribution / packaging
-build/
-dist/
+# Distribution / packaging (root-only - web/dist/ holds the .whl the browser build actually
+# needs to run, so it must stay tracked; an unanchored "dist/" rule would swallow that too)
+/build/
+/dist/
 *.egg-info/
 *.egg
 
@@ -34,7 +35,13 @@ ENV/
 # Output Workbooks & Temporary Office Lock Files
 ITR2_*.xlsx
 ~$*.xlsx
-*.xlsx
+~$*.xlsm
+# NOT a blanket "*.xlsx" - that also swallowed web/_synth/benefit.xlsx and holdings.xlsx,
+# legitimate synthetic test fixtures with no personal data that web/_run_pipeline_test.py
+# needs tracked to actually work for anyone else cloning the repo. Ignore known *output*
+# artifacts by exact name instead.
+web/_synth/ITR_Schedules.xlsx
+web/_synth/Real_FY2526_Output.xlsx
 scratch/
 
 # IDE & OS-Specific Files
@@ -44,3 +51,12 @@ scratch/
 *.swo
 .DS_Store
 Thumbs.db
+
+# Local-only secrets (e.g. a personal market-data API key) - never committed/published
+web/local.config.js
+
+# Personal-path dev/test scripts (hardcode a specific machine's Downloads folder) - useful
+# locally, no value to other contributors, not part of the product
+web/_organize_etrade_docs.py
+web/_rename_organized_files.py
+web/_run_real_multifile_test.py
