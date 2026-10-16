@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,500&family=Source+Serif+4:ital@1&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <script src="https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js"></script>
 <style>
-  body{ margin:0; background:#0D0906; }
+  html, body{ margin:0; background:#0D0906; overflow-x:hidden; }
   :root{
     --accent:#FF8A4C; --accent2:#FFD166;
     --bg:#0D0906; --panel:rgba(30,19,12,0.55); --surface:rgba(255,255,255,0.045); --surface-2:rgba(255,255,255,0.07);
@@ -144,25 +144,40 @@
   }
 
   .blob{ position:absolute; border-radius:50%; filter:blur(70px); pointer-events:none; }
-  .blob-a{ width:640px; height:640px; background:var(--accent); opacity:.4; top:-220px; left:-140px; animation:driftA 26s ease-in-out infinite alternate; }
-  .blob-b{ width:520px; height:520px; background:var(--accent2); opacity:.35; top:60px; right:-180px; animation:driftB 22s ease-in-out infinite alternate; }
-  .blob-c{ width:460px; height:460px; background:#B33A3A; opacity:.22; bottom:-220px; left:28%; animation:driftC 30s ease-in-out infinite alternate; }
-  .blob-d{ width:420px; height:420px; background:#6E56CF; opacity:.2; top:1260px; left:4%; animation:driftD 24s ease-in-out infinite alternate; }
+  /* Sized/positioned in vw so the glow scales proportionally with viewport width instead of
+     eating a small-laptop screen or looking sparse on an ultrawide monitor. */
+  .blob-a{ width:clamp(320px,42vw,640px); height:clamp(320px,42vw,640px); background:var(--accent); opacity:.4; top:-12vw; left:-8vw; animation:driftA 26s ease-in-out infinite alternate; }
+  .blob-b{ width:clamp(280px,34vw,520px); height:clamp(280px,34vw,520px); background:var(--accent2); opacity:.35; top:3vw; right:-10vw; animation:driftB 22s ease-in-out infinite alternate; }
+  .blob-c{ width:clamp(260px,30vw,460px); height:clamp(260px,30vw,460px); background:#B33A3A; opacity:.22; bottom:-12vw; left:28%; animation:driftC 30s ease-in-out infinite alternate; }
+  /* Anchored to the bottom of its own section (not a hardcoded page-depth px) so it tracks
+     the results/generate area regardless of how tall the upload cards above it grow. */
+  .blob-d{ width:clamp(240px,27vw,420px); height:clamp(240px,27vw,420px); background:#6E56CF; opacity:.2; bottom:-6%; left:4%; animation:driftD 24s ease-in-out infinite alternate; }
   @keyframes driftA{ from{ transform:translate(0,0) scale(1); } to{ transform:translate(70px,50px) scale(1.1); } }
   @keyframes driftB{ from{ transform:translate(0,0) scale(1); } to{ transform:translate(-60px,40px) scale(.93); } }
   @keyframes driftC{ from{ transform:translate(0,0); } to{ transform:translate(50px,-40px); } }
   @keyframes driftD{ from{ transform:translate(0,0) scale(1); } to{ transform:translate(-45px,35px) scale(1.08); } }
 
   .visually-hidden{ position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+
+  summary::-webkit-details-marker{ display:none; }
+  summary::marker{ content:""; }
+  details[open] .scorecard-chevron{ transform:rotate(180deg); }
 </style>
 </head>
 <body>
-<div style="font-family:var(--font-sans); background:var(--bg); color:var(--text); min-height:100vh; width:100%; position:relative; overflow-x:hidden;">
+<div style="font-family:var(--font-sans); background:var(--bg); color:var(--text); min-height:100vh; width:100%; position:relative;">
 
-  <div class="blob blob-a"></div>
-  <div class="blob blob-b"></div>
-  <div class="blob blob-c"></div>
-  <div class="blob blob-d"></div>
+  <!-- Blobs live inside a centered, capped-width stage (not the raw viewport) so they stay
+       glued to the content column at any screen size. On a 13"-15" laptop the viewport is
+       close to this width anyway, so nothing changes. On a 27"-32"+ monitor the content
+       centers with large empty side margins - without this stage the blobs (anchored to the
+       actual browser edges) drift away from the text/cards into those margins instead of
+       accenting them. -->
+  <div style="max-width:1680px; margin:0 auto; position:relative; height:0;">
+    <div class="blob blob-a"></div>
+    <div class="blob blob-b"></div>
+    <div class="blob blob-c"></div>
+  </div>
 
   <svg width="0" height="0" style="position:absolute;" aria-hidden="true">
     <filter id="grainFilter">
@@ -184,25 +199,16 @@
       </div>
       <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
         <span class="badge-pill"><span class="dot dot-success"></span>Runs 100% offline — files never leave this tab</span>
-        <div style="display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--text-muted); position:relative;">
-          <span style="white-space:nowrap;">Filing year</span>
-          <button type="button" class="year-trigger" id="year-trigger" aria-haspopup="listbox" aria-expanded="false">
-            <span id="year-trigger-label" style="flex:1; text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">FY 2025-26 &middot; AY 2026-27</span>
-            <svg class="icon" id="year-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px; flex:none; transition:transform .18s ease;"><path d="M6 9l6 6 6-6"/></svg>
-          </button>
-          <div class="year-menu" id="year-menu" role="listbox" aria-label="Filing year" style="display:none;">
-            <button type="button" class="year-opt" role="option" data-fy="2023-24">FY 2023-24 &middot; AY 2024-25</button>
-            <button type="button" class="year-opt" role="option" data-fy="2024-25">FY 2024-25 &middot; AY 2025-26</button>
-            <button type="button" class="year-opt is-selected" role="option" data-fy="2025-26" aria-selected="true">FY 2025-26 &middot; AY 2026-27</button>
-            <button type="button" class="year-opt" role="option" data-fy="2026-27">FY 2026-27 &middot; AY 2027-28</button>
-          </div>
-        </div>
       </div>
     </div>
   </div>
 
   <!-- hero -->
-  <div style="max-width:1180px; margin:0 auto; padding:72px 32px 40px; position:relative; z-index:1; display:flex; gap:48px; align-items:center; flex-wrap:wrap;">
+  <!-- z-index:2 (not 1, like the panels after it) so the Filing year dropdown menu - an
+       absolutely-positioned child living inside this box - paints above the main panel that
+       follows it in the DOM, instead of being clipped by it (equal z-index siblings stack by
+       document order, so a high z-index on the menu itself isn't enough on its own). -->
+  <div style="max-width:1180px; margin:0 auto; padding:72px 32px 40px; position:relative; z-index:2; display:flex; gap:48px; align-items:center; flex-wrap:wrap;">
     <div style="flex:1 1 420px; min-width:280px;">
       <div class="eyebrow">Schedule FA &middot; FSI &middot; TR &middot; Form 67</div>
       <h1 style="font-family:var(--font-sans); font-weight:800; font-size:clamp(34px,5vw,58px); line-height:1.05; letter-spacing:-0.02em; margin:18px 0 0; max-width:820px;">
@@ -221,19 +227,47 @@
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></svg>
           See results
         </a>
+        <div style="display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--text-muted); position:relative;">
+          <span style="white-space:nowrap;">Filing year</span>
+          <button type="button" class="year-trigger" id="year-trigger" aria-haspopup="listbox" aria-expanded="false">
+            <span id="year-trigger-label" style="flex:1; text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">FY 2025-26 &middot; AY 2026-27</span>
+            <svg class="icon" id="year-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px; flex:none; transition:transform .18s ease;"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <div class="year-menu" id="year-menu" role="listbox" aria-label="Filing year" style="display:none;">
+            <button type="button" class="year-opt" role="option" data-fy="2023-24">FY 2023-24 &middot; AY 2024-25</button>
+            <button type="button" class="year-opt" role="option" data-fy="2024-25">FY 2024-25 &middot; AY 2025-26</button>
+            <button type="button" class="year-opt is-selected" role="option" data-fy="2025-26" aria-selected="true">FY 2025-26 &middot; AY 2026-27</button>
+            <button type="button" class="year-opt" role="option" data-fy="2026-27">FY 2026-27 &middot; AY 2027-28</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="flex:1 1 300px; min-width:260px; max-width:360px; padding:26px;">
+      <div class="eyebrow" style="font-size:11px;">Closing Balance Preview</div>
+      <div id="hero-closing-value" style="font-family:var(--font-sans); font-weight:800; font-size:30px; letter-spacing:-0.02em; margin-top:10px;">&mdash;</div>
+      <div id="hero-bars" style="display:flex; align-items:flex-end; gap:6px; height:60px; margin-top:18px;">
+        <div style="flex:1; height:30%; border-radius:4px 4px 0 0; background:color-mix(in srgb, var(--accent) 45%, transparent);"></div>
+        <div style="flex:1; height:42%; border-radius:4px 4px 0 0; background:color-mix(in srgb, var(--accent) 55%, transparent);"></div>
+        <div style="flex:1; height:36%; border-radius:4px 4px 0 0; background:color-mix(in srgb, var(--accent) 50%, transparent);"></div>
+        <div style="flex:1; height:58%; border-radius:4px 4px 0 0; background:color-mix(in srgb, var(--accent) 70%, transparent);"></div>
+        <div style="flex:1; height:50%; border-radius:4px 4px 0 0; background:color-mix(in srgb, var(--accent) 65%, transparent);"></div>
+        <div style="flex:1; height:72%; border-radius:4px 4px 0 0; background:color-mix(in srgb, var(--accent) 85%, transparent);"></div>
+        <div style="flex:1; height:100%; border-radius:4px 4px 0 0; background:linear-gradient(180deg,var(--accent),var(--accent2));"></div>
       </div>
     </div>
   </div>
 
   <!-- main panel -->
   <div style="max-width:1180px; margin:0 auto; padding:8px 32px 100px; position:relative; z-index:1;">
+    <div class="blob blob-d"></div>
     <div class="panel">
 
       <!-- 01 upload -->
       <div id="upload">
         <div style="display:flex; align-items:baseline; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:12px;">
           <div class="eyebrow">01 &middot; Upload documents</div>
-          <span class="badge-pill"><span class="dot dot-accent"></span><span id="ready-count">0 of 5 received</span></span>
+          <span class="badge-pill"><span class="dot dot-accent"></span><span id="ready-count">0 of 4 received</span></span>
         </div>
         <div id="fy-guidance-banner" style="font-size:13px; color:var(--text-muted); margin-bottom:24px;"></div>
 
@@ -273,37 +307,21 @@
             </div>
           </label>
 
-          <label class="card file-card" id="card-stmtCy">
-            <input type="file" id="input-stmtCy" accept=".pdf" class="visually-hidden">
+          <label class="card file-card" id="card-stmtAll">
+            <input type="file" id="input-stmtAll" accept=".pdf" multiple class="visually-hidden">
             <div style="display:flex; gap:12px; width:100%;">
               <div style="width:38px; height:38px; border-radius:10px; background:var(--surface-2); display:flex; align-items:center; justify-content:center; flex:none;">
                 <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z"/><path d="M10 9H8M16 13H8M16 17H8"/></svg>
               </div>
               <div style="min-width:0;">
-                <div style="font-weight:600; font-size:14.5px;">Calendar Year Statement</div>
-                <div style="font-size:12px; color:var(--text-faint); margin-top:2px;" id="range-stmtCy">.pdf &middot; Jan&ndash;Dec of the FY's first year</div>
+                <div style="font-weight:600; font-size:14.5px;">All Broker Statements</div>
+                <div style="font-size:12px; color:var(--text-faint); margin-top:2px;" id="range-stmtAll">.pdf &middot; Every statement since your account was opened, through the end of the FY</div>
               </div>
             </div>
+            <div style="font-size:11px; color:var(--text-faint); margin-top:8px;">One PDF per month, from account-open &mdash; select them all together.</div>
             <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:16px; padding-top:14px; border-top:1px solid var(--border-soft); width:100%;">
-              <span id="name-stmtCy" style="font-family:var(--font-mono); font-size:12px; color:var(--text-faint); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">No file selected</span>
-              <span class="btn-sm">Choose</span>
-            </div>
-          </label>
-
-          <label class="card file-card" id="card-stmtFy">
-            <input type="file" id="input-stmtFy" accept=".pdf" class="visually-hidden">
-            <div style="display:flex; gap:12px; width:100%;">
-              <div style="width:38px; height:38px; border-radius:10px; background:var(--surface-2); display:flex; align-items:center; justify-content:center; flex:none;">
-                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z"/><path d="M10 9H8M16 13H8M16 17H8"/></svg>
-              </div>
-              <div style="min-width:0;">
-                <div style="font-weight:600; font-size:14.5px;">Q4 / FY-End Statement</div>
-                <div style="font-size:12px; color:var(--text-faint); margin-top:2px;" id="range-stmtFy">.pdf &middot; Jan&ndash;Mar of the FY's second year</div>
-              </div>
-            </div>
-            <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:16px; padding-top:14px; border-top:1px solid var(--border-soft); width:100%;">
-              <span id="name-stmtFy" style="font-family:var(--font-mono); font-size:12px; color:var(--text-faint); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">No file selected</span>
-              <span class="btn-sm">Choose</span>
+              <span id="name-stmtAll" style="font-family:var(--font-mono); font-size:12px; color:var(--text-faint); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">No files selected</span>
+              <span class="btn-sm">Choose files</span>
             </div>
           </label>
 
@@ -350,7 +368,7 @@
       <div style="margin-top:44px; padding:28px; border-radius:18px; background:var(--surface); border:1px solid var(--border-soft); display:flex; align-items:center; justify-content:space-between; gap:20px; flex-wrap:wrap;">
         <div>
           <div style="font-weight:700; font-size:16px;">Ready to generate</div>
-          <div style="font-size:13px; color:var(--text-muted); margin-top:4px;" id="status-text">Select all five documents above</div>
+          <div style="font-size:13px; color:var(--text-muted); margin-top:4px;" id="status-text">Select all documents above</div>
         </div>
         <button type="button" class="btn-primary" id="btn-generate" disabled>Generate Schedules</button>
       </div>
@@ -371,51 +389,8 @@
           <span class="badge-pill"><span class="dot dot-warning"></span><span id="score-summary">&mdash;</span></span>
         </div>
 
-        <div id="skeleton-block" style="display:none; grid-template-columns:repeat(auto-fit, minmax(190px,1fr)); gap:14px; margin-bottom:32px;">
-          <div class="card"><div class="skeleton-bar" style="width:60%;"></div><div class="skeleton-bar" style="width:85%; margin-top:12px; height:22px;"></div><div class="skeleton-bar" style="width:45%; margin-top:8px;"></div></div>
-          <div class="card"><div class="skeleton-bar" style="width:60%;"></div><div class="skeleton-bar" style="width:85%; margin-top:12px; height:22px;"></div><div class="skeleton-bar" style="width:45%; margin-top:8px;"></div></div>
-          <div class="card"><div class="skeleton-bar" style="width:60%;"></div><div class="skeleton-bar" style="width:85%; margin-top:12px; height:22px;"></div><div class="skeleton-bar" style="width:45%; margin-top:8px;"></div></div>
-        </div>
-
-        <div id="numbers-block" style="display:none; grid-template-columns:repeat(auto-fit, minmax(190px,1fr)); gap:14px; margin-bottom:32px;">
-          <div class="card kpi-card" style="grid-column:span 2; background:linear-gradient(135deg, color-mix(in srgb, var(--accent) 16%, var(--surface)), var(--surface));">
-            <div class="kpi-label">Peak balance</div>
-            <div class="kpi-value" id="kpi-peak" style="margin-top:8px; font-size:36px;">&mdash;</div>
-            <div style="font-size:11.5px; color:var(--text-faint); margin-top:4px;">USD &middot; highest mark-to-market</div>
-          </div>
-          <div class="card kpi-card">
-            <div class="kpi-label">Closing balance</div>
-            <div class="kpi-value" id="kpi-closing" style="margin-top:8px;">&mdash;</div>
-            <div style="font-size:11.5px; color:var(--text-faint); margin-top:4px;">Dec 31 &middot; USD</div>
-          </div>
-          <div class="card kpi-card">
-            <div class="kpi-label">Dividends received</div>
-            <div class="kpi-value" id="kpi-div" style="margin-top:8px;">&mdash;</div>
-          </div>
-          <div class="card kpi-card">
-            <div class="kpi-label">Gross sale proceeds</div>
-            <div class="kpi-value" id="kpi-proceeds" style="margin-top:8px;">&mdash;</div>
-            <div style="font-size:11.5px; color:var(--text-faint); margin-top:4px;">FIFO lot matching</div>
-          </div>
-          <div class="card kpi-card">
-            <div class="kpi-label">FTC claimed</div>
-            <div class="kpi-value" id="kpi-ftc" style="margin-top:8px;">&mdash;</div>
-            <div style="font-size:11.5px; color:var(--text-faint); margin-top:4px;">via Form 67</div>
-          </div>
-          <div class="card kpi-card">
-            <div class="kpi-label">FA accounts</div>
-            <div class="kpi-value" id="kpi-accounts" style="margin-top:8px;">&mdash;</div>
-            <div style="font-size:11.5px; color:var(--text-faint); margin-top:4px;">E*TRADE &middot; Fidelity (stub)</div>
-          </div>
-        </div>
-
         <div id="scorecard-block" style="display:none;">
-          <div class="card" style="padding:0; overflow:hidden;">
-            <div style="padding:16px 20px; border-bottom:1px solid var(--border-soft); font-weight:600; font-size:13.5px; color:var(--text-muted);">Compliance scorecard</div>
-            <div id="scorecard-list"></div>
-          </div>
-
-          <div class="card" style="margin-top:20px; display:flex; align-items:center; justify-content:space-between; gap:20px; flex-wrap:wrap;">
+          <div class="card" style="margin-bottom:20px; display:flex; align-items:center; justify-content:space-between; gap:20px; flex-wrap:wrap;">
             <div style="display:flex; align-items:center; gap:14px; min-width:0;">
               <div style="width:42px; height:42px; border-radius:11px; background:var(--success-soft); display:flex; align-items:center; justify-content:center; flex:none;">
                 <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="var(--success)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z"/><path d="M9 13h6M9 17h3"/></svg>
@@ -430,6 +405,17 @@
               Download workbook
             </button>
           </div>
+
+          <details class="card" style="padding:0; overflow:hidden;">
+            <summary style="padding:16px 20px; font-weight:600; font-size:13.5px; color:var(--text-muted); cursor:pointer; list-style:none; display:flex; align-items:center; justify-content:space-between; gap:12px;">
+              <span>Compliance scorecard</span>
+              <span style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text-faint); font-weight:400;">
+                Show details
+                <svg class="icon scorecard-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px; transition:transform .18s ease;"><path d="M6 9l6 6 6-6"/></svg>
+              </span>
+            </summary>
+            <div id="scorecard-list" style="border-top:1px solid var(--border-soft);"></div>
+          </details>
         </div>
 
       </div>
@@ -445,6 +431,7 @@
   </div>
 
 </div>
+<script src="local.config.js" onerror="void 0"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -11,21 +11,22 @@ from itr_assist.services.sbi_rates import SBIRateService
 from itr_assist.services.valuation import ValuationEngine
 from itr_assist.validation import ValidationEngine
 
-def run_pipeline(fy, taxpayer_name, pan):
+def run_pipeline(fy, taxpayer_name, pan, stmt_paths_json):
     cy = fy_to_calendar_year(fy)
     next_cy = cy + 1
     ay_y1 = cy + 1
     ay = f"{ay_y1}-{(ay_y1 + 1) % 100:02d}"
 
-    stmt_cy = "/uploads/stmt_cy.pdf"
-    stmt_fy = "/uploads/stmt_fy.pdf"
+    stmt_paths = json.loads(stmt_paths_json)
+    if not stmt_paths:
+        raise ValueError("No statement PDFs were provided - select every month's PDF for both the Calendar Year and Q4/FY-End slots.")
 
-    adapter = BrokerParserFactory.auto_detect(stmt_cy)
+    adapter = BrokerParserFactory.auto_detect(stmt_paths[0])
     all_lots = adapter.parse_benefit_history("/uploads/benefit.xlsx")
     holdings_lots = adapter.parse_holdings("/uploads/holdings.xlsx")
     primary_symbol = all_lots[0].symbol if all_lots else None
     summaries, dividends, sales = adapter.parse_statements(
-        [stmt_cy, stmt_fy], symbol_hint=primary_symbol, calendar_year_hint=cy
+        stmt_paths, symbol_hint=primary_symbol, calendar_year_hint=cy
     )
     form_1042s = adapter.parse_tax_documents("/uploads/taxdoc.pdf", calendar_year_hint=cy)
 
@@ -108,7 +109,7 @@ def run_pipeline(fy, taxpayer_name, pan):
     })
 
 try:
-    result = run_pipeline(fy, taxpayer_name, pan)
+    result = run_pipeline(fy, taxpayer_name, pan, stmt_paths_json)
 except Exception as e:
     import json as _json
     result = _json.dumps({"ok": False, "error": str(e), "traceback": traceback.format_exc()})

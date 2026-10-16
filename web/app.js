@@ -4,8 +4,7 @@
 const FILE_SLOTS = [
   { key: "benefit", accept: ".xlsx,.xls", cardId: "card-benefit", nameId: "name-benefit" },
   { key: "holdings", accept: ".xlsx,.xls", cardId: "card-holdings", nameId: "name-holdings" },
-  { key: "stmtCy", accept: ".pdf", cardId: "card-stmtCy", nameId: "name-stmtCy" },
-  { key: "stmtFy", accept: ".pdf", cardId: "card-stmtFy", nameId: "name-stmtFy" },
+  { key: "stmtAll", accept: ".pdf", cardId: "card-stmtAll", nameId: "name-stmtAll", multi: true },
   { key: "taxDoc", accept: ".pdf", cardId: "card-taxDoc", nameId: "name-taxDoc" },
 ];
 
@@ -31,23 +30,42 @@ function fmtBytes(n) {
   return (n / (1024 * 1024)).toFixed(1) + " MB";
 }
 
+function slotHasFiles(slot) {
+  const v = state.files[slot.key];
+  return slot.multi ? Array.isArray(v) && v.length > 0 : !!v;
+}
+
 function filesReadyCount() {
-  return FILE_SLOTS.filter((s) => state.files[s.key]).length;
+  return FILE_SLOTS.filter(slotHasFiles).length;
 }
 
 function updateFileCardUI(slot) {
   const card = $(slot.cardId);
   const nameEl = $(slot.nameId);
-  const file = state.files[slot.key];
-  if (file) {
-    card.classList.add("file-filled");
-    nameEl.textContent = `${file.name} · ${fmtBytes(file.size)}`;
+  if (slot.multi) {
+    const files = state.files[slot.key] || [];
+    if (files.length > 0) {
+      card.classList.add("file-filled");
+      const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
+      nameEl.textContent = files.length === 1
+        ? `${files[0].name} · ${fmtBytes(totalBytes)}`
+        : `${files.length} files selected · ${fmtBytes(totalBytes)}`;
+    } else {
+      card.classList.remove("file-filled");
+      nameEl.textContent = "No files selected";
+    }
   } else {
-    card.classList.remove("file-filled");
-    nameEl.textContent = "No file selected";
+    const file = state.files[slot.key];
+    if (file) {
+      card.classList.add("file-filled");
+      nameEl.textContent = `${file.name} · ${fmtBytes(file.size)}`;
+    } else {
+      card.classList.remove("file-filled");
+      nameEl.textContent = "No file selected";
+    }
   }
-  $("ready-count").textContent = `${filesReadyCount()} of 5 received`;
-  $("btn-generate").disabled = filesReadyCount() < 5 || state.phase === "loading" || state.phase === "counting";
+  $("ready-count").textContent = `${filesReadyCount()} of 4 received`;
+  $("btn-generate").disabled = filesReadyCount() < 4 || state.phase === "loading" || state.phase === "counting";
 }
 
 function setPhase(phase, errorMessage) {
@@ -78,21 +96,17 @@ function setPhase(phase, errorMessage) {
     : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
   btn.appendChild(icon);
   btn.appendChild(document.createTextNode(" " + labels[phase]));
-  btn.disabled = phase === "loading" || phase === "counting" || filesReadyCount() < 5;
+  btn.disabled = phase === "loading" || phase === "counting" || filesReadyCount() < 4;
 
   statusText.textContent = {
-    idle: "All five documents are in — this takes a few seconds, fully offline",
-    loading: "Parsing Benefit History, Holdings, and both statements…",
+    idle: "All documents are in — this takes a few seconds, fully offline",
+    loading: "Parsing Benefit History, Holdings, and statements…",
     counting: "Applying Rule 115 / Rule 128 conversions and FIFO lot matching…",
     done: "Generated just now",
     error: "Generation failed — see details below",
   }[phase];
 
-  const skeleton = $("skeleton-block");
-  const numbers = $("numbers-block");
   const scorecard = $("scorecard-block");
-  skeleton.style.display = phase === "loading" ? "grid" : "none";
-  numbers.style.display = phase === "counting" || phase === "done" ? "grid" : "none";
   scorecard.style.display = phase === "done" ? "block" : "none";
 }
 
@@ -121,7 +135,7 @@ async function bootPyodide(onProgress) {
       "referencing",
       "pyodide-http",
     ]);
-    await micropip.install("./dist/itr_assist-1.0.0-py3-none-any.whl");
+    await micropip.install("./dist/itr_assist-1.0.5-py3-none-any.whl");
 
     onProgress("Patching network calls for the browser…");
     await pyodide.runPythonAsync(`
@@ -157,21 +171,22 @@ from itr_assist.services.sbi_rates import SBIRateService
 from itr_assist.services.valuation import ValuationEngine
 from itr_assist.validation import ValidationEngine
 
-def run_pipeline(fy, taxpayer_name, pan):
+def run_pipeline(fy, taxpayer_name, pan, stmt_paths_json, market_api_key):
     cy = fy_to_calendar_year(fy)
     next_cy = cy + 1
     ay_y1 = cy + 1
     ay = f"{ay_y1}-{(ay_y1 + 1) % 100:02d}"
 
-    stmt_cy = "/uploads/stmt_cy.pdf"
-    stmt_fy = "/uploads/stmt_fy.pdf"
+    stmt_paths = json.loads(stmt_paths_json)
+    if not stmt_paths:
+        raise ValueError("No statement PDFs were provided - select every statement you have, from account-open through the end of the filing year.")
 
-    adapter = BrokerParserFactory.auto_detect(stmt_cy)
+    adapter = BrokerParserFactory.auto_detect(stmt_paths[0])
     all_lots = adapter.parse_benefit_history("/uploads/benefit.xlsx")
     holdings_lots = adapter.parse_holdings("/uploads/holdings.xlsx")
     primary_symbol = all_lots[0].symbol if all_lots else None
     summaries, dividends, sales = adapter.parse_statements(
-        [stmt_cy, stmt_fy], symbol_hint=primary_symbol, calendar_year_hint=cy
+        stmt_paths, symbol_hint=primary_symbol, calendar_year_hint=cy
     )
     form_1042s = adapter.parse_tax_documents("/uploads/taxdoc.pdf", calendar_year_hint=cy)
 
@@ -188,13 +203,17 @@ def run_pipeline(fy, taxpayer_name, pan):
     detected_symbols = list(set(l.symbol for l in all_lots if l.symbol))
     symbols = detected_symbols if detected_symbols else list(set(d.symbol for d in dividends if d.symbol))
 
-    market_warning = None
-    mkt = MarketDataService()
+    mkt = MarketDataService(api_key=(market_api_key or None))
     for sym in symbols:
-        try:
-            mkt.load_symbol(sym)
-        except Exception as e:
-            market_warning = f"Could not load live market data for {sym}: {e}"
+        mkt.load_symbol(sym)
+    market_warning = None
+    if mkt.unavailable_symbols:
+        key_note = "even with the provided API key" if market_api_key else "no API key was provided"
+        market_warning = (
+            f"Live market data unavailable for {', '.join(sorted(mkt.unavailable_symbols))} "
+            f"({key_note}) - Peak/Closing Balance approximated using vest FMV instead "
+            f"of actual daily stock prices. Review Table A2/A3 before filing."
+        )
 
     primary_sym = symbols[0] if symbols else "STOCK"
     account_num = form_1042s.account_number if form_1042s and form_1042s.account_number else ""
@@ -254,7 +273,7 @@ def run_pipeline(fy, taxpayer_name, pan):
     })
 
 try:
-    result = run_pipeline(fy, taxpayer_name, pan)
+    result = run_pipeline(fy, taxpayer_name, pan, stmt_paths_json, market_api_key)
 except Exception as e:
     import json as _json
     result = _json.dumps({"ok": False, "error": str(e), "traceback": traceback.format_exc()})
@@ -266,25 +285,40 @@ async function generate() {
   try {
     const pyodide = await bootPyodide((msg) => (($("status-text").textContent = msg)));
 
-    const writes = {
+    const singleWrites = {
       benefit: "/uploads/benefit.xlsx",
       holdings: "/uploads/holdings.xlsx",
-      stmtCy: "/uploads/stmt_cy.pdf",
-      stmtFy: "/uploads/stmt_fy.pdf",
       taxDoc: "/uploads/taxdoc.pdf",
     };
-    for (const [key, path] of Object.entries(writes)) {
+    for (const [key, path] of Object.entries(singleWrites)) {
       const bytes = await readFileBytes(state.files[key]);
       pyodide.FS.writeFile(path, bytes);
+    }
+
+    // parse_statements() already accepts any number of files spanning any date range -
+    // write every selected statement (the user's full account history, not just this FY)
+    // and hand the combined list to Python.
+    const stmtPaths = [];
+    const stmtFiles = state.files.stmtAll || [];
+    for (let i = 0; i < stmtFiles.length; i++) {
+      const path = `/uploads/stmt_${i}.pdf`;
+      const bytes = await readFileBytes(stmtFiles[i]);
+      pyodide.FS.writeFile(path, bytes);
+      stmtPaths.push(path);
     }
 
     setPhase("counting");
     const fy = state.fy;
     const taxpayerName = $("tp-name").value;
     const pan = $("tp-pan").value;
+    // Local-only key, set in web/local.config.js (git-ignored, never committed). Absent on a
+    // fresh clone or the public deployment - falls back to the approximated Peak/Closing.
+    const marketApiKey = window.ITR_ASSIST_MARKET_API_KEY || "";
     pyodide.globals.set("fy", fy);
     pyodide.globals.set("taxpayer_name", taxpayerName);
     pyodide.globals.set("pan", pan);
+    pyodide.globals.set("stmt_paths_json", JSON.stringify(stmtPaths));
+    pyodide.globals.set("market_api_key", marketApiKey);
 
     const resultJson = await pyodide.runPythonAsync(PY_PIPELINE);
     const result = JSON.parse(resultJson);
@@ -310,12 +344,7 @@ async function generate() {
 }
 
 function renderResults(result) {
-  $("kpi-peak").textContent = fmtUSD(result.kpis.peak);
-  $("kpi-closing").textContent = fmtUSD(result.kpis.closing);
-  $("kpi-div").textContent = fmtUSD(result.kpis.dividends);
-  $("kpi-proceeds").textContent = fmtUSD(result.kpis.proceeds);
-  $("kpi-ftc").textContent = fmtINR(result.kpis.ftcInr);
-  $("kpi-accounts").textContent = String(result.kpis.accounts);
+  $("hero-closing-value").textContent = fmtUSD(result.kpis.closing);
 
   $("score-summary").textContent = `${result.scoreSummary.passed} of ${result.scoreSummary.total} checks passed`;
 
@@ -369,7 +398,7 @@ function initFileInputs() {
   for (const slot of FILE_SLOTS) {
     const input = $(`input-${slot.key}`);
     input.addEventListener("change", () => {
-      state.files[slot.key] = input.files[0] || null;
+      state.files[slot.key] = slot.multi ? Array.from(input.files) : (input.files[0] || null);
       updateFileCardUI(slot);
     });
     updateFileCardUI(slot);
@@ -388,13 +417,14 @@ function updateFyGuidance() {
   const cy = fyToCalendarYear(fy);
   const nextCy = cy + 1;
 
-  $("range-stmtCy").textContent = `.pdf · Jan ${cy} – Dec ${cy}`;
-  $("range-stmtFy").textContent = `.pdf · Jan ${nextCy} – Mar ${nextCy}`;
+  $("range-stmtAll").textContent = `.pdf · Account-open through Mar ${nextCy}`;
   $("range-taxDoc").textContent = `.pdf · IRS Form 1042-S for calendar year ${cy}`;
 
   $("fy-guidance-banner").innerHTML =
-    `For <strong>FY ${fy}</strong>: give statements covering <strong>Jan ${cy} – Mar ${nextCy}</strong> ` +
-    `(15 months total), and the Form 1042-S issued for calendar year ${cy}. ` +
+    `For <strong>FY ${fy}</strong>: upload <strong>every statement PDF you have, from when your account was first opened through Mar ${nextCy}</strong> — ` +
+    `not just the months inside this FY. Schedule FA needs your complete sale history to correctly ` +
+    `work out which lots from earlier years are already sold, not just the ones sold during ${fy}. ` +
+    `Also give the Form 1042-S issued for calendar year ${cy}. ` +
     `Benefit History should be your full all-time export, not date-limited.`;
 }
 
