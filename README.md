@@ -9,6 +9,8 @@
 
 It ingests standard broker exports (PDF account statements, Excel benefit histories, and IRS Form 1042-S), reconstructs the taxpayer's complete share lot lifecycle, applies mandatory Indian statutory exchange rates (Rule 115 & Rule 128), and generates a multi-sheet, scrutiny-ready Excel working paper with a 100% compliant statutory audit scorecard.
 
+![ITR Assist web app](docs/screenshot.jpg)
+
 ---
 
 ## 🔒 Strict Data Privacy Guarantee
@@ -42,6 +44,29 @@ It ingests standard broker exports (PDF account statements, Excel benefit histor
 ---
 
 ## 🚀 Quick Start
+
+### Option A: Web App (Recommended — No Install)
+
+Open **[the live app](https://vaderbv.github.io/ITR-Assist/)** directly in your browser. Nothing to clone, install, or run — the entire tool (including the Python engine) runs client-side via [Pyodide](https://pyodide.org/), and your documents never leave the tab. Upload your broker documents, pick your filing year, and click **Generate Schedules**.
+
+Prefer to run it locally instead of the hosted link? Clone the repo, then serve the `web/` folder as a static site (it must be served over `http://`, not opened as a local `file://` path — the browser blocks the fetches that path needs):
+
+```bash
+git clone https://github.com/VaderBV/ITR-Assist.git
+cd ITR-Assist/web
+python -m http.server 8743
+# then open http://127.0.0.1:8743/
+```
+
+**Live market data (optional):** Yahoo Finance cannot be reached directly from a browser (no CORS support), so by default Peak/Closing Balance in Schedule FA falls back to an approximation using each lot's vest-date value. For exact daily-price figures, get a free API key from [twelvedata.com](https://twelvedata.com) (no credit card) and create `web/local.config.js` locally:
+
+```js
+window.ITR_ASSIST_MARKET_API_KEY = "your-key-here";
+```
+
+This file is git-ignored — it stays on your machine and is never committed or uploaded anywhere.
+
+### Option B: Desktop GUI / CLI (Python)
 
 ### 1. Installation
 
@@ -90,10 +115,10 @@ Run headlessly or automate via CLI:
 
 ```bash
 itr-assist \
-  --benefit-history data/BenefitHistory.xlsx \
-  --holdings data/ByStatus_expanded.xlsx \
-  --statement-cy data/ClientStatements_2025.pdf \
-  --statement-fy data/ClientStatements_Jan-March26.pdf \
+  --benefit-file data/BenefitHistory.xlsx \
+  --holdings-file data/ByStatus_expanded.xlsx \
+  --stmt-cy data/ClientStatements_2025.pdf \
+  --stmt-fy data/ClientStatements_Jan-March26.pdf \
   --tax-doc data/TaxDocuments_1042S.pdf \
   --ay 2026-27 \
   --fy 2025-26 \
@@ -119,14 +144,16 @@ Place your files in a local directory (e.g. `Data/`). These files are ignored by
 5. **Form 1042-S Tax Document (`TaxDocuments_1042S.pdf`):**
    * IRS Form 1042-S issued by the US withholding agent showing Box 2 (Gross Income) and Box 7a (Federal Tax Withheld).
 
+> **If you've ever sold shares in a prior financial year, feed in every statement since your account was opened, not just the current filing year's 15-month window.** The engine needs your complete sale history to correctly work out which lots from earlier years are already sold — without it, Schedule FA Table A3's lot-level figures stay correct for the year itself, but the reconciliation-vs-holdings sanity check will show a false mismatch. **The web app's "All Broker Statements" picker already supports selecting any number of files at once; the CLI's `--stmt-cy`/`--stmt-fy` currently each take exactly one file**, so CLI users wanting full-history reconciliation need to merge their PDFs into one file per flag first (e.g. with any PDF-merge tool) until the CLI is updated to accept multiple paths too.
+
 ---
 
 ## ⚖️ Statutory Grounding & Rules Engine
 
 ITR Assist features a built-in statutory rules engine enforcing Indian tax laws:
 
-* **Rule 115(2)(c) Rate Timing:** Dividends received in foreign currency must be converted to INR using the SBI TT Buying Rate of the **last day of the month immediately preceding the month of dividend receipt**.
-* **Rule 128(8) Rate Timing:** Foreign tax credit claimed under Section 90 must be converted using the SBI TT Buying Rate on the **date on which the foreign tax was paid or deducted**.
+* **Rule 115, Explanation clause (e) — Dividend Rate Timing:** Dividends received in foreign currency must be converted to INR using the SBI TT Buying Rate of the **last day of the month immediately preceding the month of dividend receipt**. Clause (f) applies the same mechanism to capital gains/sale proceeds on transfer of a foreign asset.
+* **Rule 128(5)(ii) Rate Timing:** Foreign tax credit claimed under Section 90 must be converted using the SBI TT Buying Rate of the **last day of the month immediately preceding the month in which the foreign tax was paid or deducted** — not the deduction date itself, a distinction verified word-for-word against the official rule text.
 * **Section 90 DTAA Article 10 Cap:** Maximum foreign tax credit claimable on foreign dividends under the Indo-US treaty is capped at 25% (or treaty rate), preventing defective return notices under Section 139(9).
 * **Section 288A & 288B Rounding:** Total income and tax amounts rounded to the nearest integer rupee or multiple of ₹10 as statutorily mandated.
 * **Peak Valuation Standard:** Peak market values for Schedule FA Table A3 are established using End-of-Day (EOD) closing prices under official CBDT guidance.
