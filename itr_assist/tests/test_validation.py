@@ -65,6 +65,8 @@ def sample_a2():
                 source="Synthetic statement fixture",
             )
         ],
+        # (statement end, value the model computes, value the statement prints)
+        model_checks=[(date(2025, 12, 31), 4011.61, 4011.61)],
     )
 
 
@@ -92,8 +94,8 @@ def sample_a3_lot():
         closing_date=date(2025, 12, 31),
         closing_price_usd=62.59,
         closing_rate_inr=89.47,
-        gross_dividends_usd=14.40,
-        gross_dividends_inr=1264,
+        gross_dividends_usd=70.54,
+        gross_dividends_inr=6193,
         gross_proceeds_inr=0,
         is_sold_lot=False,
         initial_cost_usd=534.88,

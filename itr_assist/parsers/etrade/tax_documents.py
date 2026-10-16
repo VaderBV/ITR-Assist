@@ -63,6 +63,19 @@ class ETradeTaxDocumentParser(BaseTaxDocumentParser):
                 if candidate and not any(w in candidate for w in ["FORM", "PAGE", "CODE", "TOTAL"]):
                     name = candidate
 
+        # Withholding agent (the custodian) address, box 12: printed as "US" (country) followed by
+        # the street lines and a "CITY, ST 12345" line. Left empty when it cannot be read.
+        agent_address = ""
+        agent_zip = ""
+        addr_m = re.search(
+            r"\nUS\s*\n((?:[^\n]*\n){1,4}?)\s*([A-Z][A-Z .'-]+,\s*[A-Z]{2}\s+(\d{5})(?:-\d{4})?)\s*\n",
+            full_text,
+        )
+        if addr_m:
+            street = ", ".join(line.strip() for line in addr_m.group(1).splitlines() if line.strip())
+            agent_address = ", ".join(part for part in (street, addr_m.group(2).strip()) if part)
+            agent_zip = addr_m.group(3)
+
         full_text_upper = full_text.upper()
         if "MORGAN STANLEY" in full_text_upper:
             agent = "Morgan Stanley Smith Barney LLC"
@@ -79,5 +92,7 @@ class ETradeTaxDocumentParser(BaseTaxDocumentParser):
             tax_withheld_usd=tax_withheld,
             withholding_rate=rate,
             withholding_agent=agent,
-            account_number=acc_num
+            account_number=acc_num,
+            withholding_agent_address=agent_address,
+            withholding_agent_zip=agent_zip,
         )

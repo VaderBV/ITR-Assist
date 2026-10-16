@@ -51,8 +51,16 @@ class ETradeStatementParser(BaseStatementParser):
                 year_hint = fallback_year + 1
 
             doc_period = None  # statement period from the most recent page header in this file
+            # One segment per statement: the cover page (period totals) plus the pages after it
+            # (cash, holdings, activity). The cover page does not carry cash, holdings or interest -
+            # those sit on later pages - so each summary is completed from its whole segment.
+            segments: List[list] = []
             for idx, page in enumerate(reader.pages):
                 txt = page.extract_text() or ""
+                if "Ending Total Value" in txt and "CLIENT STATEMENT" in txt:
+                    segments.append([None, [txt]])
+                elif segments:
+                    segments[-1][1].append(txt)
 
                 # Detect statement year from header
                 page_year_m = re.search(r'CLIENT STATEMENT\s+For the Period[^\n]*?(20\d\d)', txt)
@@ -92,7 +100,7 @@ class ETradeStatementParser(BaseStatementParser):
                             eq_val = float(eq_m.group(1).replace(',', '')) if eq_m else end_val - cash_val
                             shs_held = float(shs_m.group(1).replace(',', '')) if shs_m else 0.0
 
-                            summaries.append(StatementPeriodSummary(
+                            summary = StatementPeriodSummary(
                                 period_label=period_label,
                                 start_date=start_d,
                                 end_date=end_d,
@@ -101,7 +109,9 @@ class ETradeStatementParser(BaseStatementParser):
                                 cash_balance_usd=cash_val,
                                 equities_value_usd=eq_val,
                                 shares_held=shs_held
-                            ))
+                            )
+                            summaries.append(summary)
+                            segments[-1][0] = summary
 
                 # Extract Dividend line items. The $ sign on the Credits amount is present on
                 # some statements (monthly) and absent on others (quarterly) - confirmed on two
@@ -185,10 +195,132 @@ class ETradeStatementParser(BaseStatementParser):
                             net_credit_usd=credits_net,
                         ))
 
+            for summary, page_texts in segments:
+                if summary is not None:
+                    self._enrich_summary(summary, "\n".join(page_texts))
+
         summaries.sort(key=lambda x: x.start_date)
         dividends.sort(key=lambda x: x.pay_date)
         sales.sort(key=lambda x: x.sale_date)
         return summaries, dividends, sales
+
+    # A money amount as printed in the activity table: "$29.37", "(7.34)", "2,242.57". Exactly two
+    # decimals and no digit after, so quantities ("9.000") and prices ("$190.0000") never match.
+    _MONEY = re.compile(r'(\(?)\$?\s?([\d,]+\.\d{2})(?!\d)(\)?)')
+
+    def _enrich_summary(self, summary: StatementPeriodSummary, text: str) -> None:
+        """Fill the fields the cover page does not carry, from the whole statement's text.
+
+        Verified against real Morgan Stanley / E*TRADE statements: the cover page holds only the
+        period totals; closing cash is on the Account Summary page ("CLOSING CASH, BDP, MMFs"),
+        holdings on the STOCKS table ("ACME CORP (ACME) 40.000 $150.000 ...") and interest
+        on the "CASH FLOW ACTIVITY BY DATE" table. A value that cannot be found is left as the
+        cover-page result rather than guessed.
+        """
+        closing = self._printed_amount('CLOSING CASH, BDP, MMFs', text)
+        if closing is None:
+            fallback = re.search(r'\bCash\s+\$([\d,]+\.\d{2})', text)
+            closing = float(fallback.group(1).replace(',', '')) if fallback else None
+        if closing is not None:
+            summary.cash_balance_usd = closing
+
+        opening = self._printed_amount('OPENING CASH, BDP, MMFs', text)
+        if opening is not None:
+            summary.opening_cash_usd = opening
+
+        equities = re.search(r'\bEquities\s+([\d,]+\.\d{2})\b', text)
+        if equities is not None:
+            summary.equities_value_usd = float(equities.group(1).replace(',', ''))
+        else:
+            summary.equities_value_usd = round(summary.ending_value_usd - summary.cash_balance_usd, 2)
+
+        for m in re.finditer(
+            r'^([A-Z][A-Za-z0-9 &.,\'/\-]*?)\s\(([A-Z][A-Z0-9.]{0,5})\)\s+([\d,]+\.\d+)\s+\$([\d,]+\.\d+)',
+            text, re.M,
+        ):
+            name, sym = m.group(1).strip(), m.group(2)
+            if sym not in summary.holdings_qty:
+                summary.holdings_qty[sym] = float(m.group(3).replace(',', ''))
+                summary.holdings_price[sym] = float(m.group(4).replace(',', ''))
+                summary.holdings_name[sym] = name
+        if summary.holdings_qty:
+            summary.shares_held = sum(summary.holdings_qty.values())
+        else:
+            plan = re.search(r'([\d,]+\.\d+)\s+shs from Stock Plan', text)
+            if plan is not None:
+                summary.shares_held = float(plan.group(1).replace(',', ''))
+
+        cash_events, interest_events = self._parse_cash_activity(
+            text, (summary.start_date, summary.end_date)
+        )
+        summary.cash_events = cash_events
+        summary.interest_events = interest_events
+        summary.interest_usd = round(sum(amount for _, amount in interest_events), 2)
+
+    @staticmethod
+    def _printed_amount(label: str, text: str) -> Optional[float]:
+        """First amount printed after label; a dash means zero (early statements print "—" for
+        an empty balance). None when the label is absent."""
+        m = re.search(re.escape(label) + r'\s+(?:\$?([\d,]+\.\d{2})|[—–-])(?!\d)', text)
+        if m is None:
+            return None
+        return float(m.group(1).replace(',', '')) if m.group(1) else 0.0
+
+    def _parse_cash_activity(
+        self, text: str, period: Tuple[date, date]
+    ) -> Tuple[List[Tuple[date, float, str]], List[Tuple[date, float]]]:
+        """Rows of the "CASH FLOW ACTIVITY BY DATE" table, as (date the cash moved, signed USD,
+        description), plus the interest credits among them as (date, USD).
+
+        Only that table is read: the "MONEY MARKET FUND (MMF) AND BANK DEPOSIT PROGRAM ACTIVITY"
+        table below it mirrors the same money as sweeps and would double-count it. A trade row
+        carries two dates (trade, settlement); cash moves on the settlement date. Securities
+        transfers move shares, not cash, and are skipped.
+        """
+        start = text.find("CASH FLOW ACTIVITY BY DATE")
+        if start < 0:
+            return [], []
+        end = text.find("NET CREDITS/(DEBITS)", start)
+        section = text[start:end if end > 0 else len(text)]
+        header = section.find("Credits/(Debits)")
+        body = section[header + len("Credits/(Debits)"):] if header >= 0 else section
+
+        rows: List[list] = []
+        for line in body.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            m = re.match(r'^(\d{1,2}/\d{1,2})(?:\s+(\d{1,2}/\d{1,2}))?\s+(\S.*)$', line)
+            if m:
+                rows.append([m.group(1), m.group(2), m.group(3)])
+            elif rows:
+                rows[-1][2] += " " + line
+
+        cash_events: List[Tuple[date, float, str]] = []
+        interest_events: List[Tuple[date, float]] = []
+        for first_date, settle_date, desc in rows:
+            if re.match(r'(Transfer into Account|Transfer out of Account)', desc):
+                continue
+            amounts = list(self._MONEY.finditer(desc))
+            if not amounts:
+                continue
+            last = amounts[-1]
+            value = float(last.group(2).replace(',', ''))
+            if last.group(1) == '(' or last.group(3) == ')':
+                value = -value
+            label = desc[:amounts[0].start()].strip() or desc.strip()
+
+            cash_on = settle_date or first_date
+            m_num, d_num = map(int, cash_on.split('/'))
+            cash_date = date(self._infer_year(m_num, d_num, period, period[1].year), m_num, d_num)
+            cash_events.append((cash_date, value, label))
+
+            if desc.startswith("Interest Income") and value > 0:
+                m_num, d_num = map(int, first_date.split('/'))
+                interest_events.append(
+                    (date(self._infer_year(m_num, d_num, period, period[1].year), m_num, d_num), value)
+                )
+        return cash_events, interest_events
 
     def _parse_period_dates(self, period_str: str, default_year: int) -> Optional[Tuple[date, date]]:
         """Parse 'December 1-31, 2025' or 'January 1- February 28, 2025'. Returns None for an

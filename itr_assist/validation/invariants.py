@@ -1,8 +1,14 @@
 """Accounting, Valuation, and Cross-Document Invariant Validators."""
 from datetime import date, timedelta
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
-from itr_assist.models import Form1042SData, SaleEvent, ShareLot, StatementPeriodSummary
+from itr_assist.models import (
+    Form1042SData,
+    SaleEvent,
+    ShareLot,
+    StatementPeriodSummary,
+    is_placeholder,
+)
 from itr_assist.services.valuation import (
     ScheduleFATableA2Result,
     ScheduleFATableA3LotResult,
@@ -83,6 +89,143 @@ class InvariantValidator:
             status=RuleStatus.PASSED,
             details=f"Statements continuously cover {required_start.isoformat()} to {required_end.isoformat()}.",
         )]
+
+    def validate_placeholders(
+        self,
+        a2: ScheduleFATableA2Result,
+        a3_lots: List[ScheduleFATableA3LotResult],
+        taxpayer_fields: Optional[Dict[str, str]] = None,
+    ) -> List[ValidationRuleResult]:
+        """No statutory field may still hold a "TO BE FILLED" stand-in.
+
+        Company/broker addresses, ZIP codes and the account opening date are not on any broker
+        document. They used to be filled with invented values ("00000", "2021-01-01") that passed
+        every check; now they are placeholders and this rule fails until the taxpayer supplies them.
+        """
+        missing: List[str] = []
+        a2_fields = [
+            ("broker name", a2.financial_inst_name),
+            ("broker address", a2.financial_inst_address),
+            ("broker ZIP", a2.zip_code),
+            ("account number", a2.account_number),
+            ("account opening date", a2.account_open_date),
+        ]
+        a2_missing = [label for label, value in a2_fields if is_placeholder(value)]
+        if a2_missing:
+            missing.append("Table A2: " + ", ".join(a2_missing))
+
+        a3_missing: List[str] = []
+        for label, attr in (("company name", "name_of_entity"), ("company address", "address_of_entity"), ("company ZIP", "zip_code")):
+            if any(is_placeholder(getattr(lot, attr)) for lot in a3_lots):
+                a3_missing.append(label)
+        if a3_missing:
+            missing.append("Table A3: " + ", ".join(a3_missing))
+
+        tp_missing = [label for label, value in (taxpayer_fields or {}).items() if is_placeholder(value)]
+        if tp_missing:
+            missing.append("Taxpayer: " + ", ".join(tp_missing))
+
+        common = dict(
+            rule_id="INV-NO-PLACEHOLDERS",
+            category=RuleCategory.CBDT_SCHEMA,
+            authority="CBDT e-Filing mandatory fields (Schedule FA Tables A2/A3)",
+            title="Mandatory Details Supplied (no stand-in values)",
+            description=(
+                "Details no broker document contains (addresses, ZIP codes, account opening date) "
+                "must be supplied by the taxpayer, never invented."
+            ),
+            severity=Severity.DEFECTIVE_139_9,
+        )
+        if missing:
+            return [ValidationRuleResult(
+                **common,
+                status=RuleStatus.FAILED,
+                details=(
+                    "Still to be filled in: " + "; ".join(missing) + ". Enter them under 'Details your "
+                    "documents don't contain' (or the matching command-line options) and regenerate."
+                ),
+            )]
+        return [ValidationRuleResult(
+            **common,
+            status=RuleStatus.PASSED,
+            details="Every mandatory Table A2/A3 detail holds a value supplied from the documents or by the taxpayer.",
+        )]
+
+    def validate_a2_integrity(
+        self, a2: ScheduleFATableA2Result, a3_lots: List[ScheduleFATableA3LotResult]
+    ) -> List[ValidationRuleResult]:
+        """Cross-checks that make a wrong Table A2 visible instead of "100% compliant".
+
+        1. The peak is only trusted if cash + shares x close reproduces the total the broker
+           prints on every statement date of the year (catches missing cash, wrong share counts,
+           bad prices - the peak itself cannot be checked against any document).
+        2. A2's dividend and sale-proceeds rows must equal what Table A3 reports for the same
+           lots (catches an income row that is missing or wrongly converted).
+        """
+        results: List[ValidationRuleResult] = []
+
+        peak_common = dict(
+            rule_id="INV-A2-PEAK-VERIFIED",
+            category=RuleCategory.DOCUMENT_RECONCILIATION,
+            authority="Statement reconciliation (cash + shares x close vs printed account total)",
+            title="Table A2 Peak Reproduces Broker Statement Totals",
+            description=(
+                "The valuation behind the peak balance must reproduce the account total printed on "
+                "every statement of the calendar year."
+            ),
+            severity=Severity.AUDIT_WARNING,
+            field_name="PeakBalanceDuringPeriod",
+        )
+        if a2.peak_notes:
+            results.append(ValidationRuleResult(
+                **peak_common, status=RuleStatus.FAILED,
+                details="Peak not verified: " + " ".join(a2.peak_notes),
+            ))
+        elif not a2.model_checks:
+            results.append(ValidationRuleResult(
+                **peak_common, status=RuleStatus.WARNING,
+                details="No statement ending in the calendar year could be checked against the valuation.",
+            ))
+        else:
+            first, last = a2.model_checks[0][0], a2.model_checks[-1][0]
+            results.append(ValidationRuleResult(
+                **peak_common, status=RuleStatus.PASSED,
+                details=(
+                    f"Cash + shares x close equals the printed account total on all "
+                    f"{len(a2.model_checks)} statement dates ({first} to {last}); peak "
+                    f"₹{a2.peak_balance_inr:,} on {a2.peak_date}."
+                ),
+            ))
+
+        by_nature = {g.nature: g.amount_inr for g in a2.gross_amounts}
+        tolerance = max(5, len(a3_lots))  # each lot rounds on its own; a few rupees of drift is rounding
+        problems: List[str] = []
+        for nature, label, a3_total in (
+            ("D", "dividends", sum(l.gross_dividends_inr for l in a3_lots)),
+            ("S", "sale proceeds", sum(l.gross_proceeds_inr for l in a3_lots)),
+        ):
+            a2_total = by_nature.get(nature, 0)
+            if abs(a2_total - a3_total) > tolerance:
+                problems.append(f"{label}: Table A2 reports ₹{a2_total:,} but Table A3 lots add up to ₹{a3_total:,}")
+        income_common = dict(
+            rule_id="INV-A2-A3-INCOME",
+            category=RuleCategory.DOCUMENT_RECONCILIATION,
+            authority="Cross-schedule consistency (Table A2 gross amounts vs Table A3 lot totals)",
+            title="Table A2 Income Rows Agree With Table A3",
+            description="Dividends and sale proceeds credited to the account must match the lot-level totals.",
+            severity=Severity.AUDIT_WARNING,
+        )
+        if problems:
+            results.append(ValidationRuleResult(
+                **income_common, status=RuleStatus.FAILED,
+                details="; ".join(problems) + ". A row may be missing or shares may be unmatched to lots.",
+            ))
+        else:
+            results.append(ValidationRuleResult(
+                **income_common, status=RuleStatus.PASSED,
+                details=f"Table A2 dividend and sale-proceeds rows agree with Table A3 within ₹{tolerance}.",
+            ))
+        return results
 
     def validate_peak_closing_invariants(
         self, a2: ScheduleFATableA2Result, a3_lots: List[ScheduleFATableA3LotResult]

@@ -275,7 +275,7 @@ async function initRuntime(onProgress) {
     "referencing==0.34.0",
     "pyodide-http==0.2.1",
   ]);
-  await micropip.install("./dist/itr_assist-1.0.6-py3-none-any.whl");
+  await micropip.install("./dist/itr_assist-1.0.7-py3-none-any.whl");
 
   onProgress("Patching network calls for the browser…");
   await pyodide.runPythonAsync(`
@@ -312,6 +312,7 @@ pyodide_http.patch_all()
 const PY_PIPELINE = `
 import json, traceback
 from datetime import date
+from itr_assist.models import PLACEHOLDER_PREFIX
 from itr_assist.parsers import BrokerParserFactory
 from itr_assist.reconciliation.lot_ledger import LotLedger
 from itr_assist.reconciliation.verifier import DocumentVerifier
@@ -322,7 +323,8 @@ from itr_assist.services.sbi_rates import SBIRateService
 from itr_assist.services.valuation import ValuationEngine
 from itr_assist.validation import ValidationEngine
 
-def run_pipeline(fy, taxpayer_name, pan, stmt_paths_json, market_api_key):
+def run_pipeline(fy, taxpayer_name, pan, stmt_paths_json, market_api_key, details_json="{}"):
+    details = json.loads(details_json or "{}")
     cy = fy_to_calendar_year(fy)
     next_cy = cy + 1
     ay_y1 = cy + 1
@@ -341,8 +343,8 @@ def run_pipeline(fy, taxpayer_name, pan, stmt_paths_json, market_api_key):
     )
     form_1042s = adapter.parse_tax_documents("/uploads/taxdoc.pdf", calendar_year_hint=cy)
 
-    tp_name = taxpayer_name or (form_1042s.recipient_name if form_1042s and form_1042s.recipient_name else "SAMPLE TAXPAYER")
-    tp_pan = pan or (form_1042s.recipient_tin if form_1042s and form_1042s.recipient_tin else "ABCDE1234F")
+    tp_name = taxpayer_name or (form_1042s.recipient_name if form_1042s and form_1042s.recipient_name else f"{PLACEHOLDER_PREFIX}: taxpayer name")
+    tp_pan = pan or (form_1042s.recipient_tin if form_1042s and form_1042s.recipient_tin else f"{PLACEHOLDER_PREFIX}: PAN")
 
     ledger = LotLedger(all_lots)
     enriched_sales = ledger.allocate_sales(sales)
@@ -367,17 +369,36 @@ def run_pipeline(fy, taxpayer_name, pan, stmt_paths_json, market_api_key):
 
     primary_sym = symbols[0] if symbols else "STOCK"
     account_num = form_1042s.account_number if form_1042s and form_1042s.account_number else ""
+
+    # Details no broker document states (company address/ZIP, account opening date) come from the
+    # taxpayer; anything still blank becomes a "TO BE FILLED" placeholder that validation flags.
+    def detail(key):
+        return (details.get(key) or "").strip()
+
+    security_names = {}
+    for s in summaries:
+        security_names.update(s.holdings_name)
+    broker_address, broker_zip, broker_source = detail("broker_address"), detail("broker_zip"), ""
+    if not broker_address and form_1042s and form_1042s.withholding_agent_address:
+        broker_address = form_1042s.withholding_agent_address
+        broker_zip = broker_zip or form_1042s.withholding_agent_zip
+        broker_source = "Form 1042-S box 12 (withholding agent)"
     engine = ValuationEngine(
         ledger=ledger, sbi_service=sbi, market_service=mkt,
-        employer_entity_name=f"{primary_sym} Corporation",
+        employer_entity_name=detail("company_name") or security_names.get(primary_sym, ""),
+        employer_entity_address=detail("company_address"), employer_zip=detail("company_zip"),
         broker_name=adapter.broker_name, account_number=account_num,
+        broker_address=broker_address, broker_zip=broker_zip,
+        account_open_date=detail("account_open_date"), broker_details_source=broker_source,
     )
 
     dec_summary = next((s for s in summaries if s.end_date == date(cy, 12, 31)), None)
     if dec_summary is None:
         raise ValueError(f"No statement period ending 31-Dec-{cy} found - check the Calendar Year Statement covers all of {cy}.")
 
-    a2_res = engine.compute_table_a2(cy, dec_summary, dividends)
+    a2_res = engine.compute_table_a2(
+        cy, dec_summary, dividends, statement_summaries=summaries, cy_sales=enriched_sales
+    )
     a3_res = engine.compute_table_a3(cy, dividends, enriched_sales)
 
     fy_divs = [d for d in dividends if date(cy, 4, 1) <= d.pay_date <= date(next_cy, 3, 31)]
@@ -391,6 +412,7 @@ def run_pipeline(fy, taxpayer_name, pan, stmt_paths_json, market_api_key):
         form_1042s=form_1042s, cy_dividends_usd=cy_div_usd, cy_tax_withheld_usd=cy_tax_usd,
         is_resident=True, part_b_tti_sl19_yes=True, sales=enriched_sales,
         statement_summaries=summaries, lots=ledger.lots, calendar_year=cy,
+        taxpayer_fields={"taxpayer name": tp_name, "PAN": tp_pan},
     )
 
     out_path = "/output/ITR_Schedules.xlsx"
@@ -425,7 +447,7 @@ def run_pipeline(fy, taxpayer_name, pan, stmt_paths_json, market_api_key):
     })
 
 try:
-    result = run_pipeline(fy, taxpayer_name, pan, stmt_paths_json, market_api_key)
+    result = run_pipeline(fy, taxpayer_name, pan, stmt_paths_json, market_api_key, globals().get("details_json", "{}"))
 except Exception as e:
     import json as _json
     result = _json.dumps({"ok": False, "error": str(e), "traceback": traceback.format_exc()})
@@ -503,6 +525,14 @@ async function generate() {
     pyodide.globals.set("fy", fy);
     pyodide.globals.set("taxpayer_name", taxpayerName);
     pyodide.globals.set("pan", pan);
+    pyodide.globals.set("details_json", JSON.stringify({
+      account_open_date: $("d-open-date").value.trim(),
+      broker_address: $("d-broker-address").value.trim(),
+      broker_zip: $("d-broker-zip").value.trim(),
+      company_name: $("d-company-name").value.trim(),
+      company_address: $("d-company-address").value.trim(),
+      company_zip: $("d-company-zip").value.trim(),
+    }));
     pyodide.globals.set("stmt_paths_json", JSON.stringify(stmtPaths));
     pyodide.globals.set("market_api_key", marketApiKey);
 
@@ -751,6 +781,9 @@ function initTaxpayerInputs() {
   });
 
   $("tp-name").addEventListener("input", onInputsChanged);
+  for (const id of ["d-open-date", "d-broker-address", "d-broker-zip", "d-company-name", "d-company-address", "d-company-zip"]) {
+    $(id).addEventListener("input", onInputsChanged);
+  }
 }
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

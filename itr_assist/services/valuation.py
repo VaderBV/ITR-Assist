@@ -3,7 +3,14 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
-from itr_assist.models import DividendEvent, SaleEvent, ShareLot, StatementPeriodSummary
+from itr_assist.models import (
+    PLACEHOLDER_PREFIX,
+    DividendEvent,
+    SaleEvent,
+    ShareLot,
+    StatementPeriodSummary,
+)
+from itr_assist.services.cash_timeline import CashTimeline
 from itr_assist.reconciliation.lot_ledger import LotLedger
 from itr_assist.services.market_data import MarketDataService
 from itr_assist.services.sbi_rates import SBIRateService
@@ -41,9 +48,18 @@ class ScheduleFATableA2Result:
     closing_date: date
     closing_rate_inr: float
     gross_amounts: List[A2GrossAmount] = field(default_factory=list)
-    peak_degraded: bool = False   # True when daily prices were unavailable and the peak is a floor estimate
+    peak_degraded: bool = False   # True when the peak could not be fully verified (see peak_notes)
+    # Why the peak is not fully verified: unreconciled cash periods, or the valuation model not
+    # reproducing a statement's printed total. Empty when everything checked out.
+    peak_notes: List[str] = field(default_factory=list)
+    # (statement end date, model value USD, value the statement prints) for each statement ending
+    # in the calendar year: proof that shares x price + cash reproduces the broker's own totals.
+    model_checks: List[Tuple[date, float, float]] = field(default_factory=list)
     source_peak: str = "Broker Statement (Peak Account Value) & SBI TTBR Sheet"
     source_closing: str = "Broker Statement (Ending Net Portfolio Value) & SBI TTBR Sheet"
+    # Where the broker address/ZIP came from when they were not typed in (e.g. Form 1042-S box
+    # 12), so the workbook can tell the taxpayer to confirm them. Empty when typed in or missing.
+    source_broker_details: str = ""
 
 
 @dataclass
@@ -83,8 +99,8 @@ class ScheduleFATableA3LotResult:
     source_dividends: str = "Client Statements Account Activity"
     gross_proceeds_usd: float = 0.0
     source_proceeds: str = ""
-    # Schedule FA income columns (11: dividends, 12: proceeds) convert at the TTBR of the
-    # calendar year's closing date (31-Dec), per the CBDT Schedule FA guide.
+    # Not used for the figures: dividends and proceeds above convert at their Rule 115
+    # preceding-month-end TTBR (see compute_table_a3). Kept for the 31-Dec reference rate only.
     income_rate_inr: float = 0.0
     income_rate_date: Optional[date] = None
     peak_degraded: bool = False     # peak not from daily prices in the holding window
@@ -149,26 +165,35 @@ class ValuationEngine:
         ledger: LotLedger,
         sbi_service: SBIRateService,
         market_service: MarketDataService,
-        employer_entity_name: str = "Foreign Employer Entity",
-        employer_entity_address: str = "Corporate Headquarters Address",
-        employer_zip: str = "00000",
-        broker_name: str = "Foreign Custodial Broker",
-        broker_address: str = "Broker Operating Address",
-        broker_zip: str = "00000",
+        employer_entity_name: str = "",
+        employer_entity_address: str = "",
+        employer_zip: str = "",
+        broker_name: str = "",
+        broker_address: str = "",
+        broker_zip: str = "",
         account_number: str = "",
-        account_open_date: str = "2021-01-01"
+        account_open_date: str = "",
+        broker_details_source: str = "",
     ):
+        """Statutory details the documents cannot supply (company/broker address, ZIP, account
+        opening date, ...) are never invented: a blank argument becomes a "TO BE FILLED: ..."
+        placeholder that validation flags until the taxpayer provides the real value."""
+        def given(value: str, what: str) -> str:
+            value = (value or "").strip()
+            return value if value else f"{PLACEHOLDER_PREFIX}: {what}"
+
         self.ledger = ledger
         self.sbi = sbi_service
         self.mkt = market_service
-        self.employer_entity_name = employer_entity_name
-        self.employer_entity_address = employer_entity_address
-        self.employer_zip = employer_zip
-        self.broker_name = broker_name
-        self.broker_address = broker_address
-        self.broker_zip = broker_zip
-        self.account_number = account_number
-        self.account_open_date = account_open_date
+        self.employer_entity_name = given(employer_entity_name, "company name")
+        self.employer_entity_address = given(employer_entity_address, "company address")
+        self.employer_zip = given(employer_zip, "company ZIP")
+        self.broker_name = given(broker_name, "broker name")
+        self.broker_address = given(broker_address, "broker address")
+        self.broker_zip = given(broker_zip, "broker ZIP")
+        self.account_number = given(account_number, "account number")
+        self.account_open_date = given(account_open_date, "account opening date YYYY-MM-DD")
+        self.broker_details_source = broker_details_source
 
     def compute_table_a3(
         self,
@@ -291,9 +316,17 @@ class ValuationEngine:
         self,
         calendar_year: int,
         dec_summary: StatementPeriodSummary,
-        cy_dividends: List[DividendEvent]
+        cy_dividends: List[DividendEvent],
+        statement_summaries: Optional[List[StatementPeriodSummary]] = None,
+        cy_sales: Optional[List[SaleEvent]] = None,
     ) -> ScheduleFATableA2Result:
-        """Compute Schedule FA Table A2 (Custodial Account level) results."""
+        """Compute Schedule FA Table A2 (Custodial Account level) results.
+
+        statement_summaries (every statement parsed, any year) lets the peak use the account's
+        real cash balance for each day and lets interest be reported; without them the peak can
+        only assume the 31-Dec cash all year and is flagged unverified. cy_sales (the sales
+        returned by LotLedger.allocate_sales) supply the sale-proceeds row.
+        """
         cy_start = date(calendar_year, 1, 1)
         cy_end = date(calendar_year, 12, 31)
 
@@ -301,11 +334,45 @@ class ValuationEngine:
         close_rate = self.sbi.get_rate(cy_end)
         closing_inr = round(dec_summary.ending_value_usd * close_rate)
 
-        # 2. Peak Account Balance: Evaluate daily total account value (equities using EOD Close)
+        # 2. Peak Account Balance: the highest total account value (cash + shares at the day's
+        # close) on any trading day of the year, at that day's SBI rate. Cash comes from the
+        # statements' own roll-forward, day by day (it moves: sale proceeds, wires, dividends).
         peak_inr = -1.0
         peak_usd = 0.0
         peak_date = cy_start
         peak_rate = close_rate
+        peak_notes: List[str] = []
+
+        summaries = sorted(statement_summaries or [dec_summary], key=lambda s: s.start_date)
+        timeline: Optional[CashTimeline] = CashTimeline(summaries) if statement_summaries else None
+        if timeline is None:
+            peak_notes.append(
+                f"No statement history was supplied, so the account's cash is taken as its 31-Dec "
+                f"balance (${dec_summary.cash_balance_usd:,.2f}) on every day of {calendar_year}."
+            )
+        else:
+            gaps = timeline.unverified_ranges(cy_start, cy_end)
+            if gaps:
+                peak_notes.append(
+                    "Cash could not be verified against the statements for "
+                    + ", ".join(f"{a} to {b}" for a, b in gaps)
+                    + "; the statement's printed month-end cash is used on those days."
+                )
+            peak_notes.extend(timeline.issues_between(cy_start, cy_end))
+
+        def printed_cash(day: date) -> float:
+            """Cash printed by the statement covering `day` (else the latest one before it)."""
+            before = None
+            for s in summaries:
+                if s.start_date <= day <= s.end_date:
+                    return s.cash_balance_usd
+                if s.end_date < day:
+                    before = s.cash_balance_usd
+            return before if before is not None else dec_summary.cash_balance_usd
+
+        def cash_on(day: date) -> float:
+            verified = timeline.cash_on(day) if timeline else None
+            return verified if verified is not None else printed_cash(day)
 
         symbols = sorted({lot.symbol for lot in self.ledger.lots if lot.symbol})
         closes_by_symbol = {
@@ -320,7 +387,7 @@ class ValuationEngine:
 
         last_close: Dict[str, float] = {}
         for d in valuation_dates:
-            day_usd = dec_summary.cash_balance_usd
+            day_usd = cash_on(d)
             complete = True
             for symbol in symbols:
                 if d in closes_by_symbol[symbol]:
@@ -339,48 +406,111 @@ class ValuationEngine:
                     peak_date = d
                     peak_rate = day_rate
 
+        # Proof that the model (cash + shares x close) reproduces the broker's own totals on
+        # every statement date of the year. If it cannot, the peak is not trustworthy - this is
+        # the check that catches missing cash, wrong share counts and bad price data.
+        model_checks: List[Tuple[date, float, float]] = []
+        for s in summaries:
+            if not (cy_start <= s.end_date <= cy_end):
+                continue
+            value = cash_on(s.end_date)
+            priced = True
+            for symbol in symbols:
+                shares, _ = self.ledger.get_shares_held_on_date(s.end_date, symbol)
+                if shares <= 0:
+                    continue
+                found = self.mkt.close_on_or_before(symbol, s.end_date)
+                if found is None:
+                    priced = False
+                    break
+                value += shares * found[1]
+            if not priced:
+                continue
+            model_checks.append((s.end_date, round(value, 2), s.ending_value_usd))
+            if abs(value - s.ending_value_usd) > max(1.0, 0.001 * s.ending_value_usd):
+                peak_notes.append(
+                    f"The valuation model gives ${value:,.2f} on {s.end_date} but the statement "
+                    f"prints ${s.ending_value_usd:,.2f} (cash + shares x close)."
+                )
+
         # Table A2 Invariant: Peak balance must be at least closing balance
         if closing_inr > peak_inr:
+            if dec_summary.ending_value_usd > peak_usd + 0.01:
+                peak_notes.append(
+                    f"The computed peak (${peak_usd:,.2f}) is below the statement's 31-Dec value "
+                    f"(${dec_summary.ending_value_usd:,.2f}); the peak was raised to the closing value."
+                )
             peak_inr = float(closing_inr)
             peak_usd = dec_summary.ending_value_usd
             peak_date = cy_end
             peak_rate = close_rate
 
         # 3. Gross amounts paid/credited in CY. Each nature is a separate CBDT A2 row.
+        # All three convert each credit at its own Rule 115 preceding-month-end TTBR, the same
+        # convention Schedule OS and Table A3 use for dividends and sale proceeds.
         tot_div_usd = 0.0
         tot_div_inr = 0
         for d in cy_dividends:
             if d.pay_date.year == calendar_year:
                 tot_div_usd += d.gross_amount_usd
-                # Rule 115: same preceding-month-end TTBR rule as Schedule OS/Table A3.
                 _, pay_rate = self.sbi.get_rule_115_dividend_rate(d.pay_date)
                 tot_div_inr += round(d.gross_amount_usd * pay_rate)
 
+        if statement_summaries:
+            interest_events = [(d, a) for s in summaries for d, a in s.interest_events if d.year == calendar_year]
+        elif dec_summary.interest_usd:
+            interest_events = [(cy_end, dec_summary.interest_usd)]
+        else:
+            interest_events = []
+        tot_int_usd = sum(a for _, a in interest_events)
+        tot_int_inr = sum(round(a * self.sbi.get_rule_115_dividend_rate(d)[1]) for d, a in interest_events)
+
+        tot_sale_usd = 0.0
+        tot_sale_inr = 0
+        for sale in cy_sales or []:
+            if sale.sale_date.year == calendar_year:
+                tot_sale_usd += sale.gross_proceeds_usd
+                _, sale_rate = self.sbi.get_rule_115_capital_gains_rate(sale.sale_date)
+                tot_sale_inr += round(sale.gross_proceeds_usd * sale_rate)
+
         src_peak_a2 = (
-            f"{self.broker_name} Statement cash balance plus verified daily closes for "
-            f"{', '.join(symbols) or 'account holdings'} "
-            f"cash balance on {peak_date.strftime('%Y-%m-%d')} & SBI TTBR ₹{peak_rate:.2f}"
+            f"{self.broker_name} Statement cash balance (day by day) plus verified daily closes for "
+            f"{', '.join(symbols) or 'account holdings'}; peak on {peak_date.strftime('%Y-%m-%d')} "
+            f"& SBI TTBR ₹{peak_rate:.2f}"
         )
         src_close_a2 = f"{self.broker_name} Statement (Dec {calendar_year}, Page 1: Ending Net Portfolio Value) & SBI TTBR Sheet (31-Dec-{calendar_year})"
         src_gross_a2 = f"{self.broker_name} CY {calendar_year} Statement Account Activity & IRS Form 1042-S Box 2"
+
+        def effective_rate(inr: int, usd: float) -> float:
+            return round(inr / usd, 4) if usd else 0.0
+
         gross_amounts = []
         if tot_div_usd or tot_div_inr:
             gross_amounts.append(A2GrossAmount(
                 nature="D",
                 amount_usd=round(tot_div_usd, 2),
                 amount_inr=tot_div_inr,
-                rate_inr=0.0,
+                rate_inr=effective_rate(tot_div_inr, tot_div_usd),
                 rate_date=cy_end,
                 source=src_gross_a2,
             ))
-        if dec_summary.interest_usd:
+        if tot_int_usd:
             gross_amounts.append(A2GrossAmount(
                 nature="I",
-                amount_usd=round(dec_summary.interest_usd, 2),
-                amount_inr=round(dec_summary.interest_usd * close_rate),
-                rate_inr=close_rate,
+                amount_usd=round(tot_int_usd, 2),
+                amount_inr=tot_int_inr,
+                rate_inr=effective_rate(tot_int_inr, tot_int_usd),
                 rate_date=cy_end,
-                source=f"{self.broker_name} statement interest credits",
+                source=f"{self.broker_name} CY {calendar_year} statement interest credits (Interest Income rows)",
+            ))
+        if tot_sale_usd:
+            gross_amounts.append(A2GrossAmount(
+                nature="S",
+                amount_usd=round(tot_sale_usd, 2),
+                amount_inr=tot_sale_inr,
+                rate_inr=effective_rate(tot_sale_inr, tot_sale_usd),
+                rate_date=cy_end,
+                source=f"{self.broker_name} CY {calendar_year} sales: quantity x price, before commission",
             ))
         if not gross_amounts:
             gross_amounts.append(A2GrossAmount(
@@ -410,9 +540,12 @@ class ValuationEngine:
             closing_date=cy_end,
             closing_rate_inr=close_rate,
             gross_amounts=gross_amounts,
-            peak_degraded=False,
+            peak_degraded=bool(peak_notes),
+            peak_notes=peak_notes,
+            model_checks=model_checks,
             source_peak=src_peak_a2,
             source_closing=src_close_a2,
+            source_broker_details=self.broker_details_source,
         )
 
     def compute_schedule_os_and_ftc(
