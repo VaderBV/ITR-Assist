@@ -45,13 +45,12 @@ def run_pipeline(fy, taxpayer_name, pan, stmt_paths_json, market_api_key):
     mkt = MarketDataService(api_key=(market_api_key or None))
     for sym in symbols:
         mkt.load_symbol(sym)
-    market_warning = None
     if mkt.unavailable_symbols:
         key_note = "even with the provided API key" if market_api_key else "no API key was provided"
-        market_warning = (
-            f"Live market data unavailable for {', '.join(sorted(mkt.unavailable_symbols))} "
-            f"({key_note}) - Peak/Closing Balance approximated using vest FMV instead "
-            f"of actual daily stock prices. Review Table A2/A3 before filing."
+        raise ValueError(
+            f"Verified daily market data is unavailable for {', '.join(sorted(mkt.unavailable_symbols))} "
+            f"({key_note}). Generation is blocked because Schedule FA peak and closing values "
+            f"must not be approximated. Configure a market-data API key or retry with connectivity."
         )
 
     primary_sym = symbols[0] if symbols else "STOCK"
@@ -76,9 +75,10 @@ def run_pipeline(fy, taxpayer_name, pan, stmt_paths_json, market_api_key):
     cy_div_usd = sum(d.gross_amount_usd for d in dividends if d.pay_date.year == cy)
     cy_tax_usd = sum(d.tax_withheld_usd for d in dividends if d.pay_date.year == cy)
     val_report = validator.validate(
-        a2=a2_res, a3_lots=a3_res, os_result=os_res, ftc=ftc_res, recon=report,
+        a2=a2_res, a3_lots=a3_res, os_result=os_res, ftc=ftc_res,
         form_1042s=form_1042s, cy_dividends_usd=cy_div_usd, cy_tax_withheld_usd=cy_tax_usd,
         is_resident=True, part_b_tti_sl19_yes=True, sales=enriched_sales,
+        statement_summaries=summaries, lots=ledger.lots, calendar_year=cy,
     )
 
     out_path = "/output/ITR_Schedules.xlsx"
@@ -94,7 +94,6 @@ def run_pipeline(fy, taxpayer_name, pan, stmt_paths_json, market_api_key):
     return json.dumps({
         "ok": True,
         "outPath": out_path,
-        "marketWarning": market_warning,
         "kpis": {
             "peak": a2_res.peak_balance_usd,
             "closing": a2_res.closing_balance_usd,
@@ -104,10 +103,12 @@ def run_pipeline(fy, taxpayer_name, pan, stmt_paths_json, market_api_key):
             "accounts": 1,
         },
         "scorecard": [
-            {"id": r.rule_id, "title": r.title, "status": r.status.value, "details": r.details}
+            {"id": r.rule_id, "title": r.title, "status": r.status.value,
+             "severity": r.severity.value, "details": r.details}
             for r in val_report.results
         ],
         "scoreSummary": {"total": sc.total_rules, "passed": sc.passed, "status": sc.compute_status()},
+        "downloadAllowed": sc.is_filing_ready,
         "outputFile": f"ITR2_Foreign_Assets_Working_AY{ay}.xlsx",
     })
 

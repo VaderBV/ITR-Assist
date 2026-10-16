@@ -1,20 +1,43 @@
 // ITR Assist — browser-side orchestration.
-// Everything runs client-side via Pyodide. No file is ever uploaded anywhere.
+// All processing runs client-side via Pyodide: the user's documents never leave this tab.
+// (The page itself does go online to download the Python runtime/packages and to fetch public
+// exchange-rate / price data.)
 
 const FILE_SLOTS = [
-  { key: "benefit", accept: ".xlsx,.xls", cardId: "card-benefit", nameId: "name-benefit" },
-  { key: "holdings", accept: ".xlsx,.xls", cardId: "card-holdings", nameId: "name-holdings" },
+  // .xlsx only: the browser build reads spreadsheets with openpyxl, which can't open legacy .xls.
+  { key: "benefit", accept: ".xlsx", cardId: "card-benefit", nameId: "name-benefit" },
+  { key: "holdings", accept: ".xlsx", cardId: "card-holdings", nameId: "name-holdings" },
   { key: "stmtAll", accept: ".pdf", cardId: "card-stmtAll", nameId: "name-stmtAll", multi: true },
   { key: "taxDoc", accept: ".pdf", cardId: "card-taxDoc", nameId: "name-taxDoc" },
 ];
 
+const PYODIDE_INDEX_URL = "https://cdn.jsdelivr.net/pyodide/v0.26.2/full/";
+const SBI_CSV_URL = "./data/cache/SBI_REFERENCE_RATES_USD.csv";
+const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
+const RUNTIME_LOAD_MSG = "Couldn't load the Python runtime. Check your internet connection and try again.";
+
+// An error whose message is meant to be shown to the user as-is. Technical detail goes to
+// console.error (and `cause`), never into the UI.
+class FriendlyError extends Error {
+  constructor(message, options) {
+    super(message, options);
+    this.name = "FriendlyError";
+  }
+}
+
 const state = {
-  files: {}, // key -> File
+  files: {}, // key -> File (File[] for multi slots)
   phase: "idle", // idle | loading | counting | done | error
   pyodide: null,
   errorMessage: "",
-  fy: "2025-26",
+  fy: null, // set from today's date in initYearDropdown()
+  lastOutputBlob: null,
+  lastOutputName: null,
 };
+
+// Bumped on every input change. A run whose inputs changed while it was in flight discards
+// its output instead of showing results that no longer match the form.
+let inputsVersion = 0;
 
 const $ = (id) => document.getElementById(id);
 
@@ -49,37 +72,102 @@ function updateFileCardUI(slot) {
       const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
       nameEl.textContent = files.length === 1
         ? `${files[0].name} · ${fmtBytes(totalBytes)}`
-        : `${files.length} files selected · ${fmtBytes(totalBytes)}`;
+        : `${files.length} files · ${fmtBytes(totalBytes)}`;
+      nameEl.title = files.map((f) => f.name).join("\n");
     } else {
       card.classList.remove("file-filled");
       nameEl.textContent = "No files selected";
+      nameEl.title = "";
     }
+    const chooseEl = $(`choose-${slot.key}`);
+    if (chooseEl) chooseEl.textContent = files.length > 0 ? "Add more" : "Choose files";
   } else {
     const file = state.files[slot.key];
     if (file) {
       card.classList.add("file-filled");
       nameEl.textContent = `${file.name} · ${fmtBytes(file.size)}`;
+      nameEl.title = file.name;
     } else {
       card.classList.remove("file-filled");
       nameEl.textContent = "No file selected";
+      nameEl.title = "";
     }
   }
-  $("ready-count").textContent = `${filesReadyCount()} of 4 received`;
-  $("btn-generate").disabled = filesReadyCount() < 4 || state.phase === "loading" || state.phase === "counting";
+  $("ready-count").textContent = `${filesReadyCount()} of ${FILE_SLOTS.length} received`;
+  refreshGenerateControls();
+}
+
+const isBusy = () => state.phase === "loading" || state.phase === "counting";
+
+// PAN as the user means it: uppercase, no spaces/punctuation, at most 10 chars.
+function normalizePan(v) {
+  return String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10);
+}
+
+// Blank is fine (auto-filled from Form 1042-S); anything else must be a well-formed PAN.
+function panIsValid() {
+  const v = normalizePan($("tp-pan").value);
+  return v === "" || PAN_RE.test(v);
+}
+
+function showPanHint(show) {
+  const input = $("tp-pan");
+  $("pan-hint").style.display = show ? "block" : "none";
+  input.classList.toggle("is-invalid", show);
+  input.setAttribute("aria-invalid", String(show));
+}
+
+function idleStatusText() {
+  const missing = FILE_SLOTS.length - filesReadyCount();
+  if (missing > 0) return `Select all documents above — ${missing} still missing`;
+  if (!panIsValid()) return "Fix the PAN format above to continue";
+  return "All documents are in — processing happens right here in this tab";
+}
+
+function refreshGenerateControls() {
+  $("btn-generate").disabled = isBusy() || filesReadyCount() < FILE_SLOTS.length;
+  if (state.phase === "idle") $("status-text").textContent = idleStatusText();
+}
+
+// Drop everything derived from the previous run so a stale workbook can never be downloaded.
+function clearResults() {
+  state.lastOutputBlob = null;
+  state.lastOutputName = null;
+  $("scorecard-list").innerHTML = "";
+  const attention = $("attention-box");
+  attention.innerHTML = "";
+  attention.style.display = "none";
+  $("score-summary").textContent = "—";
+  $("score-dot").className = "dot dot-warning";
+  $("scorecard-count").textContent = "";
+  $("download-filename").textContent = "ITR_Schedules.xlsx";
+  $("btn-download").disabled = true;
+  $("hero-closing-value").textContent = "—";
+}
+
+// Called whenever any input (files, filing year, name, PAN) changes.
+function onInputsChanged() {
+  inputsVersion++;
+  if (state.phase === "done" || state.phase === "error") {
+    clearResults();
+    setPhase("idle");
+  } else {
+    refreshGenerateControls();
+  }
 }
 
 function setPhase(phase, errorMessage) {
   state.phase = phase;
   state.errorMessage = errorMessage || "";
   const btn = $("btn-generate");
-  const statusText = $("status-text");
-  const resultsWrap = $("results-wrap");
-  const errorBox = $("error-box");
 
-  errorBox.style.display = phase === "error" ? "flex" : "none";
-  if (phase === "error") $("error-text").textContent = state.errorMessage;
+  $("error-box").style.display = phase === "error" ? "flex" : "none";
+  $("error-text").textContent = phase === "error" ? state.errorMessage : "";
 
-  resultsWrap.style.display = phase === "idle" ? "none" : "block";
+  // Results only ever describe a finished run for the current inputs.
+  const done = phase === "done";
+  $("results-wrap").style.display = done ? "block" : "none";
+  $("scorecard-block").style.display = done ? "block" : "none";
 
   const labels = {
     idle: "Generate Schedules",
@@ -96,64 +184,124 @@ function setPhase(phase, errorMessage) {
     : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
   btn.appendChild(icon);
   btn.appendChild(document.createTextNode(" " + labels[phase]));
-  btn.disabled = phase === "loading" || phase === "counting" || filesReadyCount() < 4;
 
-  statusText.textContent = {
-    idle: "All documents are in — this takes a few seconds, fully offline",
+  const statusByPhase = {
     loading: "Parsing Benefit History, Holdings, and statements…",
     counting: "Applying Rule 115 / Rule 128 conversions and FIFO lot matching…",
-    done: "Generated just now",
+    done: "Generated just now · editing any input clears these results",
     error: "Generation failed — see details below",
-  }[phase];
-
-  const scorecard = $("scorecard-block");
-  scorecard.style.display = phase === "done" ? "block" : "none";
+  };
+  if (phase !== "idle") $("status-text").textContent = statusByPhase[phase];
+  refreshGenerateControls(); // button enabled-state + idle status text
 }
 
 async function readFileBytes(file) {
-  const buf = await file.arrayBuffer();
-  return new Uint8Array(buf);
+  try {
+    return new Uint8Array(await file.arrayBuffer());
+  } catch (err) {
+    // Typically NotReadableError: the file was moved/edited on disk after it was picked.
+    throw new FriendlyError(
+      `Couldn't read "${file.name}" — it may have been moved or changed since you picked it. Pick it again and retry.`,
+      { cause: err },
+    );
+  }
 }
 
+// Cached while pending and after success only; reset on failure so "Try again" really retries.
 let pyodideReadyPromise = null;
+// The interpreter itself, kept once loadPyodide() succeeds so a retry after a later step
+// (package download, micropip, data fetch) doesn't spin up a second runtime.
+let pyodideInstance = null;
 
-async function bootPyodide(onProgress) {
-  if (pyodideReadyPromise) return pyodideReadyPromise;
-  pyodideReadyPromise = (async () => {
+// pyodide.js is loaded by a <script> tag in index.html; if the CDN was unreachable at page
+// load, (re)inject it so a retry can recover without a page reload.
+function ensurePyodideScript() {
+  if (typeof globalThis.loadPyodide === "function") return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = PYODIDE_INDEX_URL + "pyodide.js";
+    s.onload = () => (typeof globalThis.loadPyodide === "function"
+      ? resolve()
+      : reject(new Error("pyodide.js loaded but loadPyodide() is not defined")));
+    s.onerror = () => {
+      s.remove();
+      reject(new Error(`Failed to load ${s.src}`));
+    };
+    document.head.appendChild(s);
+  });
+}
+
+function bootPyodide(onProgress) {
+  if (!pyodideReadyPromise) {
+    pyodideReadyPromise = initRuntime(onProgress).catch((err) => {
+      pyodideReadyPromise = null;
+      console.error("Python runtime failed to load:", err);
+      throw err instanceof FriendlyError ? err : new FriendlyError(RUNTIME_LOAD_MSG, { cause: err });
+    });
+  }
+  return pyodideReadyPromise;
+}
+
+async function initRuntime(onProgress) {
+  if (!pyodideInstance) {
     onProgress("Loading Python runtime…");
-    const pyodide = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.26.2/full/" });
+    await ensurePyodideScript();
+    pyodideInstance = await loadPyodide({ indexURL: PYODIDE_INDEX_URL });
+  }
+  const pyodide = pyodideInstance;
 
-    onProgress("Loading pandas…");
-    await pyodide.loadPackage(["pandas", "micropip"]);
+  onProgress("Loading pandas…");
+  await pyodide.loadPackage(["pandas", "micropip"]);
+  // loadPackage() may only log a failed download instead of rejecting - verify explicitly.
+  await pyodide.runPythonAsync("import pandas, micropip");
 
-    onProgress("Installing itr_assist and dependencies…");
-    const micropip = pyodide.pyimport("micropip");
-    await micropip.install([
-      "openpyxl",
-      "pypdf",
-      "jsonschema",
-      "referencing",
-      "pyodide-http",
-    ]);
-    await micropip.install("./dist/itr_assist-1.0.6-py3-none-any.whl");
+  onProgress("Installing itr_assist and dependencies…");
+  const micropip = pyodide.pyimport("micropip");
+  // Exact pins for reproducible installs (every step below is a no-op on retry if satisfied).
+  // - openpyxl / et-xmlfile / pypdf: pure-Python wheels from PyPI, same versions as the dev venv.
+  //   et-xmlfile goes first, on its own, so openpyxl's unpinned dependency on it is already
+  //   satisfied rather than racing the pin inside one transaction.
+  // - jsonschema / referencing / pyodide-http: pinned to the builds bundled with Pyodide 0.26.2,
+  //   so micropip takes them from the Pyodide lockfile. Newer jsonschema/referencing need a newer
+  //   rpds-py, a native extension with no PyPI wasm wheel.
+  await micropip.install("et-xmlfile==2.0.0");
+  await micropip.install([
+    "openpyxl==3.1.5",
+    "pypdf==6.20.1",
+    "jsonschema==4.21.1",
+    "referencing==0.34.0",
+    "pyodide-http==0.2.1",
+  ]);
+  await micropip.install("./dist/itr_assist-1.0.6-py3-none-any.whl");
 
-    onProgress("Patching network calls for the browser…");
-    await pyodide.runPythonAsync(`
+  onProgress("Patching network calls for the browser…");
+  await pyodide.runPythonAsync(`
 import pyodide_http
 pyodide_http.patch_all()
 `);
 
-    onProgress("Seeding bundled offline data…");
-    const sbiResp = await fetch("./data/cache/SBI_REFERENCE_RATES_USD.csv");
-    const sbiBytes = new Uint8Array(await sbiResp.arrayBuffer());
-    pyodide.FS.mkdirTree("/data/cache");
-    pyodide.FS.writeFile("/data/cache/SBI_REFERENCE_RATES_USD.csv", sbiBytes);
-    pyodide.FS.mkdirTree("/uploads");
-    pyodide.FS.mkdirTree("/output");
+  onProgress("Loading bundled exchange-rate data…");
+  let sbiResp;
+  try {
+    sbiResp = await fetch(SBI_CSV_URL);
+  } catch (err) {
+    throw new FriendlyError(
+      "Couldn't load the bundled SBI exchange-rate file. Check your internet connection and try again.",
+      { cause: err },
+    );
+  }
+  if (!sbiResp.ok) {
+    throw new FriendlyError(
+      `Couldn't load the bundled SBI exchange-rate file (HTTP ${sbiResp.status}). Reload the page and try again.`,
+    );
+  }
+  const sbiBytes = new Uint8Array(await sbiResp.arrayBuffer());
+  pyodide.FS.mkdirTree("/data/cache");
+  pyodide.FS.writeFile("/data/cache/SBI_REFERENCE_RATES_USD.csv", sbiBytes);
+  pyodide.FS.mkdirTree("/uploads");
+  pyodide.FS.mkdirTree("/output");
 
-    return pyodide;
-  })();
-  return pyodideReadyPromise;
+  return pyodide;
 }
 
 // Mirrors cli.py's pipeline, adapted to read from the in-browser virtual filesystem
@@ -206,13 +354,12 @@ def run_pipeline(fy, taxpayer_name, pan, stmt_paths_json, market_api_key):
     mkt = MarketDataService(api_key=(market_api_key or None))
     for sym in symbols:
         mkt.load_symbol(sym)
-    market_warning = None
     if mkt.unavailable_symbols:
         key_note = "even with the provided API key" if market_api_key else "no API key was provided"
-        market_warning = (
-            f"Live market data unavailable for {', '.join(sorted(mkt.unavailable_symbols))} "
-            f"({key_note}) - Peak/Closing Balance approximated using vest FMV instead "
-            f"of actual daily stock prices. Review Table A2/A3 before filing."
+        raise ValueError(
+            f"Verified daily market data is unavailable for {', '.join(sorted(mkt.unavailable_symbols))} "
+            f"({key_note}). Generation is blocked because Schedule FA peak and closing values "
+            f"must not be approximated. Configure a market-data API key or retry with connectivity."
         )
 
     primary_sym = symbols[0] if symbols else "STOCK"
@@ -237,9 +384,10 @@ def run_pipeline(fy, taxpayer_name, pan, stmt_paths_json, market_api_key):
     cy_div_usd = sum(d.gross_amount_usd for d in dividends if d.pay_date.year == cy)
     cy_tax_usd = sum(d.tax_withheld_usd for d in dividends if d.pay_date.year == cy)
     val_report = validator.validate(
-        a2=a2_res, a3_lots=a3_res, os_result=os_res, ftc=ftc_res, recon=report,
+        a2=a2_res, a3_lots=a3_res, os_result=os_res, ftc=ftc_res,
         form_1042s=form_1042s, cy_dividends_usd=cy_div_usd, cy_tax_withheld_usd=cy_tax_usd,
         is_resident=True, part_b_tti_sl19_yes=True, sales=enriched_sales,
+        statement_summaries=summaries, lots=ledger.lots, calendar_year=cy,
     )
 
     out_path = "/output/ITR_Schedules.xlsx"
@@ -255,7 +403,6 @@ def run_pipeline(fy, taxpayer_name, pan, stmt_paths_json, market_api_key):
     return json.dumps({
         "ok": True,
         "outPath": out_path,
-        "marketWarning": market_warning,
         "kpis": {
             "peak": a2_res.peak_balance_usd,
             "closing": a2_res.closing_balance_usd,
@@ -265,10 +412,12 @@ def run_pipeline(fy, taxpayer_name, pan, stmt_paths_json, market_api_key):
             "accounts": 1,
         },
         "scorecard": [
-            {"id": r.rule_id, "title": r.title, "status": r.status.value, "details": r.details}
+            {"id": r.rule_id, "title": r.title, "status": r.status.value,
+             "severity": r.severity.value, "details": r.details}
             for r in val_report.results
         ],
         "scoreSummary": {"total": sc.total_rules, "passed": sc.passed, "status": sc.compute_status()},
+        "downloadAllowed": sc.is_filing_ready,
         "outputFile": f"ITR2_Foreign_Assets_Working_AY{ay}.xlsx",
     })
 
@@ -280,10 +429,44 @@ except Exception as e:
 result
 `;
 
+// Message for the error box: friendly text only; full detail is already in the console.
+function userFacingError(err) {
+  if (err instanceof FriendlyError) return err.message;
+  if (err && err.name === "PythonError" && typeof err.message === "string") {
+    // A Python traceback - show just its final "ExcType: message" line.
+    const lines = err.message.trim().split("\n");
+    return lines[lines.length - 1] || "Unexpected Python error";
+  }
+  return (err && err.message) || String(err);
+}
+
 async function generate() {
+  if (isBusy()) return;
+
+  // PAN: send it uppercased (CSS text-transform doesn't change the value) and block
+  // generation on a malformed one instead of writing it into the workbook.
+  const panEl = $("tp-pan");
+  panEl.value = normalizePan(panEl.value);
+  if (!panIsValid()) {
+    showPanHint(true);
+    panEl.focus();
+    $("status-text").textContent = "Fix the PAN format above to continue";
+    return;
+  }
+
+  const runVersion = inputsVersion;
+  const inputsChanged = () => runVersion !== inputsVersion;
+  clearResults();
   setPhase("loading");
   try {
-    const pyodide = await bootPyodide((msg) => (($("status-text").textContent = msg)));
+    const pyodide = await bootPyodide((msg) => {
+      if (isBusy()) $("status-text").textContent = msg;
+    });
+
+    // Remove statements left over from a previous run (which may have had more files).
+    for (const name of pyodide.FS.readdir("/uploads")) {
+      if (name.startsWith("stmt_")) pyodide.FS.unlink(`/uploads/${name}`);
+    }
 
     const singleWrites = {
       benefit: "/uploads/benefit.xlsx",
@@ -299,7 +482,7 @@ async function generate() {
     // write every selected statement (the user's full account history, not just this FY)
     // and hand the combined list to Python.
     const stmtPaths = [];
-    const stmtFiles = state.files.stmtAll || [];
+    const stmtFiles = (state.files.stmtAll || []).slice();
     for (let i = 0; i < stmtFiles.length; i++) {
       const path = `/uploads/stmt_${i}.pdf`;
       const bytes = await readFileBytes(stmtFiles[i]);
@@ -309,11 +492,12 @@ async function generate() {
 
     setPhase("counting");
     const fy = state.fy;
-    const taxpayerName = $("tp-name").value;
-    const pan = $("tp-pan").value;
-    // Local-only key, set in web/local.config.js (git-ignored, never committed). Absent on a
-    // fresh clone or the public deployment - falls back to the approximated Peak/Closing.
-    const marketApiKey = window.ITR_ASSIST_MARKET_API_KEY || "";
+    const taxpayerName = $("tp-name").value.trim();
+    const pan = normalizePan($("tp-pan").value);
+    // Local-only key, set in web/local.config.js (git-ignored, never committed).
+    // A public user can enter the key in the page; generation stops if verified prices
+    // are unavailable.
+    const marketApiKey = $("market-api-key").value.trim();
     pyodide.globals.set("fy", fy);
     pyodide.globals.set("taxpayer_name", taxpayerName);
     pyodide.globals.set("pan", pan);
@@ -323,67 +507,159 @@ async function generate() {
     const resultJson = await pyodide.runPythonAsync(PY_PIPELINE);
     const result = JSON.parse(resultJson);
 
+    if (inputsChanged()) {
+      setPhase("idle");
+      $("status-text").textContent = "Inputs changed while generating — generate again to use them";
+      return;
+    }
+
     if (!result.ok) {
       console.error("Pipeline error:", result.traceback);
       setPhase("error", result.error);
       return;
     }
 
-    const outBytes = pyodide.FS.readFile(result.outPath);
-    state.lastOutputBlob = new Blob([outBytes], {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    });
-    state.lastOutputName = result.outputFile;
+    if (result.downloadAllowed) {
+      const outBytes = pyodide.FS.readFile(result.outPath);
+      state.lastOutputBlob = new Blob([outBytes], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+      state.lastOutputName = result.outputFile;
+    }
 
     renderResults(result);
+    $("btn-download").disabled = !result.downloadAllowed;
     setPhase("done");
   } catch (err) {
     console.error(err);
-    setPhase("error", err.message || String(err));
+    if (inputsChanged()) {
+      setPhase("idle");
+      $("status-text").textContent = "Inputs changed while generating — generate again to use them";
+      return;
+    }
+    setPhase("error", userFacingError(err));
   }
 }
 
-function renderResults(result) {
-  $("hero-closing-value").textContent = fmtUSD(result.kpis.closing);
+// --- Results rendering -------------------------------------------------------------------
 
-  $("score-summary").textContent = `${result.scoreSummary.passed} of ${result.scoreSummary.total} checks passed`;
+const ERROR_SEVERITY_RANK = { FATAL_SCHEMA: 0, DEFECTIVE_139_9: 1, STATUTORY_ERROR: 2 };
+
+// "error" | "warning" | null (nothing to flag). INFO rows are never flagged or counted.
+function rowAttention(row) {
+  if (row.severity === "INFO" || row.status === "PASSED") return null;
+  if (row.status === "FAILED" && row.severity !== "AUDIT_WARNING") return "error";
+  return "warning"; // FAILED audit warnings, WARNING-status rows
+}
+
+function rowDotClass(row) {
+  if (row.status === "PASSED") return "dot-success";
+  const a = rowAttention(row);
+  return a === "error" ? "dot-danger" : a === "warning" ? "dot-warning" : "dot-muted";
+}
+
+const CALLOUT_ICON =
+  '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>';
+
+function renderAttention(errorRows, warningRows, notes) {
+  const box = $("attention-box");
+  box.innerHTML = "";
+  const groups = [];
+  if (errorRows.length) {
+    groups.push({
+      cls: "callout-danger",
+      heading: `Fix before filing (${errorRows.length})`,
+      items: errorRows.map((r) => ({ title: r.title, details: r.details })),
+    });
+  }
+  const warnItems = warningRows
+    .map((r) => ({ title: r.title, details: r.details }))
+    .concat(notes.map((n) => ({ title: n, details: "" })));
+  if (warnItems.length) {
+    groups.push({ cls: "callout-warning", heading: `Review before filing (${warnItems.length})`, items: warnItems });
+  }
+  for (const g of groups) {
+    const el = document.createElement("div");
+    el.className = `callout ${g.cls}`;
+    const items = g.items.map((it) =>
+      `<li><div class="callout-title">${escapeHtml(it.title)}</div>` +
+      (it.details ? `<div class="callout-details">${escapeHtml(it.details)}</div>` : "") +
+      `</li>`).join("");
+    el.innerHTML = `<div class="callout-head">${CALLOUT_ICON}<span>${escapeHtml(g.heading)}</span></div>` +
+      `<ul class="callout-list">${items}</ul>`;
+    box.appendChild(el);
+  }
+  box.style.display = groups.length ? "block" : "none";
+}
+
+function renderResults(result) {
+  const closing = result.kpis ? result.kpis.closing : null;
+  $("hero-closing-value").textContent =
+    closing != null && Number.isFinite(Number(closing)) ? fmtUSD(closing) : "—";
+
+  const rows = Array.isArray(result.scorecard) ? result.scorecard : [];
+  const errorRows = rows
+    .filter((r) => rowAttention(r) === "error")
+    .sort((a, b) => (ERROR_SEVERITY_RANK[a.severity] ?? 3) - (ERROR_SEVERITY_RANK[b.severity] ?? 3));
+  const warningRows = rows.filter((r) => rowAttention(r) === "warning");
+  const notes = [...new Set(
+    (Array.isArray(result.warnings) ? result.warnings : [])
+      .concat(result.marketWarning ? [result.marketWarning] : [])
+      .filter(Boolean)
+      .map(String),
+  )];
+  renderAttention(errorRows, warningRows, notes);
+
+  // Summary pill: driven by what's flagged, escalated by the engine's overall status.
+  const needs = errorRows.length + warningRows.length + notes.length;
+  const status = result.scoreSummary ? result.scoreSummary.status : "";
+  let tone = errorRows.length ? "danger" : needs ? "warning" : "success";
+  if (status === "PORTAL_REJECTION_RISK" || status === "DEFECTIVE_OR_NON_COMPLIANT") tone = "danger";
+  else if (tone === "success" && status === "FILING_READY_WITH_WARNINGS") tone = "warning";
+  const STATUS_LABEL = {
+    FILING_READY_WITH_WARNINGS: "Filing-ready, with warnings",
+    DEFECTIVE_OR_NON_COMPLIANT: "Defective / non-compliant",
+    PORTAL_REJECTION_RISK: "Portal rejection risk",
+  };
+  $("score-summary").textContent = needs > 0
+    ? `${needs} need${needs === 1 ? "s" : ""} attention`
+    : tone === "success" ? "All checks passed" : (STATUS_LABEL[status] || "Review the scorecard");
+  $("score-dot").className = `dot dot-${tone}`;
+
+  // Full list (collapsed by default): every row, details on a second line.
+  const counted = rows.filter((r) => r.severity !== "INFO");
+  const passed = counted.filter((r) => r.status === "PASSED").length;
+  $("scorecard-count").textContent = counted.length ? `${passed} of ${counted.length} passed · ` : "";
 
   const list = $("scorecard-list");
   list.innerHTML = "";
-  for (const row of result.scorecard) {
+  const addRow = (dotClass, title, details) => {
     const div = document.createElement("div");
     div.className = "score-row";
-    const dotClass = row.status === "PASSED" ? "dot-success" : row.status === "FAILED" ? "dot-danger" : "dot-warning";
     div.innerHTML = `
-      <div style="display:flex; align-items:center; gap:12px; min-width:0;">
-        <span class="dot ${dotClass}" style="flex:none;"></span>
-        <span style="font-size:13.5px;">${escapeHtml(row.title)}</span>
+      <div class="score-line">
+        <span class="dot ${dotClass}"></span>
+        <div style="min-width:0;">
+          <div style="font-size:13.5px;">${escapeHtml(title)}</div>
+          ${details ? `<div class="score-details">${escapeHtml(details)}</div>` : ""}
+        </div>
       </div>`;
     list.appendChild(div);
-  }
+  };
+  for (const row of rows) addRow(rowDotClass(row), row.title, row.details);
+  for (const note of notes) addRow("dot-warning", note, "");
 
-  if (result.marketWarning) {
-    const warnDiv = document.createElement("div");
-    warnDiv.className = "score-row";
-    warnDiv.innerHTML = `
-      <div style="display:flex; align-items:center; gap:12px; min-width:0;">
-        <span class="dot dot-warning" style="flex:none;"></span>
-        <span style="font-size:13.5px;">${escapeHtml(result.marketWarning)} — peak/closing valuation may be incomplete</span>
-      </div>`;
-    list.appendChild(warnDiv);
-  }
-
-  $("download-filename").textContent = result.outputFile;
+  $("download-filename").textContent = result.outputFile || "ITR_Schedules.xlsx";
 }
 
 function escapeHtml(s) {
   const d = document.createElement("div");
-  d.textContent = s;
+  d.textContent = s == null ? "" : String(s);
   return d.innerHTML;
 }
 
 function downloadOutput() {
-  if (!state.lastOutputBlob) return;
+  if (!state.lastOutputBlob || state.phase !== "done") return;
   const url = URL.createObjectURL(state.lastOutputBlob);
   const a = document.createElement("a");
   a.href = url;
@@ -391,18 +667,91 @@ function downloadOutput() {
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+const fileKey = (f) => `${f.name}|${f.size}|${f.lastModified}`;
 
 function initFileInputs() {
   for (const slot of FILE_SLOTS) {
     const input = $(`input-${slot.key}`);
     input.addEventListener("change", () => {
-      state.files[slot.key] = slot.multi ? Array.from(input.files) : (input.files[0] || null);
+      const picked = Array.from(input.files || []);
+      // Reset so re-picking the same file(s) fires "change" again.
+      input.value = "";
+      if (picked.length === 0) return; // dialog cancelled: keep the current selection
+
+      let changed;
+      if (slot.multi) {
+        // Accumulate across picker opens: statements usually sit in one folder per FY, and a
+        // file dialog can only select from one folder at a time.
+        const existing = state.files[slot.key] || [];
+        const seen = new Set(existing.map(fileKey));
+        const added = picked.filter((f) => {
+          const k = fileKey(f);
+          if (seen.has(k)) return false;
+          seen.add(k);
+          return true;
+        });
+        changed = added.length > 0;
+        if (changed) state.files[slot.key] = existing.concat(added);
+      } else {
+        state.files[slot.key] = picked[0];
+        changed = true;
+      }
       updateFileCardUI(slot);
+      if (changed) onInputsChanged();
     });
     updateFileCardUI(slot);
   }
+
+  const clearStatements = $("btn-clear-stmtAll");
+  if (clearStatements) {
+    clearStatements.addEventListener("click", (e) => {
+      // The button lives inside the card's <label>: don't let the click open the file picker.
+      e.preventDefault();
+      e.stopPropagation();
+      const slot = FILE_SLOTS.find((s) => s.key === "stmtAll");
+      if (!slotHasFiles(slot)) return;
+      state.files.stmtAll = [];
+      $("input-stmtAll").value = "";
+      updateFileCardUI(slot);
+      onInputsChanged();
+    });
+  }
+}
+
+function initTaxpayerInputs() {
+  const pan = $("tp-pan");
+  const sanitizePan = () => {
+    const raw = pan.value;
+    const next = normalizePan(raw);
+    if (next === raw) return;
+    const caret = pan.selectionStart == null ? raw.length : pan.selectionStart;
+    const pos = Math.min(normalizePan(raw.slice(0, caret)).length, next.length);
+    pan.value = next;
+    try {
+      pan.setSelectionRange(pos, pos);
+    } catch (_) { /* not focused / unsupported - harmless */ }
+  };
+  sanitizePan(); // browser form-restore may bring back a lowercase value
+
+  pan.addEventListener("input", () => {
+    sanitizePan();
+    // Hide the hint as soon as the value is valid; only raise it once a full 10 characters
+    // are in (or it's already showing) so it doesn't nag mid-typing.
+    if (panIsValid()) showPanHint(false);
+    else if (pan.value.length === 10 || $("pan-hint").style.display !== "none") showPanHint(true);
+    onInputsChanged();
+  });
+  pan.addEventListener("blur", () => {
+    if (!panIsValid()) showPanHint(true);
+  });
+
+  $("tp-name").addEventListener("input", onInputsChanged);
+  const marketKey = $("market-api-key");
+  marketKey.value = window.ITR_ASSIST_MARKET_API_KEY || "";
+  marketKey.addEventListener("input", onInputsChanged);
 }
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -428,11 +777,38 @@ function updateFyGuidance() {
     `Benefit History should be your full all-time export, not date-limited.`;
 }
 
+const yy = (n) => String(n % 100).padStart(2, "0");
+const fyKey = (start) => `${start}-${yy(start + 1)}`;
+const fyLabel = (start) => `FY ${start}-${yy(start + 1)} · AY ${start + 1}-${yy(start + 2)}`;
+
+// Filing years derived from today's date, never a hardcoded list. Only completed FYs are
+// selectable because an in-progress year cannot have complete statements or closing values.
+function filingYearChoices(today = new Date()) {
+  const latest = today.getMonth() >= 3 ? today.getFullYear() - 1 : today.getFullYear() - 2;
+  return { latest, starts: [latest, latest - 1, latest - 2, latest - 3, latest - 4] };
+}
+
 function initYearDropdown() {
   const trigger = $("year-trigger");
   const menu = $("year-menu");
   const label = $("year-trigger-label");
   const chevron = $("year-chevron");
+
+  const { latest, starts } = filingYearChoices();
+  for (const start of starts) {
+    const opt = document.createElement("button");
+    opt.type = "button";
+    opt.className = "year-opt";
+    opt.setAttribute("role", "option");
+    opt.dataset.fy = fyKey(start);
+    opt.textContent = fyLabel(start);
+    const selected = start === latest;
+    opt.classList.toggle("is-selected", selected);
+    opt.setAttribute("aria-selected", String(selected));
+    menu.appendChild(opt);
+  }
+  state.fy = fyKey(latest);
+  label.textContent = fyLabel(latest);
 
   const setOpen = (open) => {
     menu.style.display = open ? "block" : "none";
@@ -456,6 +832,7 @@ function initYearDropdown() {
       });
       setOpen(false);
       updateFyGuidance();
+      onInputsChanged();
     });
   });
 
@@ -469,6 +846,7 @@ function initYearDropdown() {
 
 function init() {
   initFileInputs();
+  initTaxpayerInputs();
   initYearDropdown();
   $("btn-generate").addEventListener("click", generate);
   $("btn-download").addEventListener("click", downloadOutput);

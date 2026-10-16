@@ -58,7 +58,9 @@ python -m http.server 8743
 # then open http://127.0.0.1:8743/
 ```
 
-**Live market data (optional):** Yahoo Finance cannot be reached directly from a browser (no CORS support), so by default Peak/Closing Balance in Schedule FA falls back to an approximation using each lot's vest-date value. For exact daily-price figures, get a free API key from [twelvedata.com](https://twelvedata.com) (no credit card) and create `web/local.config.js` locally:
+**Verified market data is required:** Yahoo Finance cannot be reached directly from a browser (no CORS support), and Schedule FA peak/closing values are not safely approximated. Get a free API key from [twelvedata.com](https://twelvedata.com) (no credit card) and enter it in the app. Generation stops rather than producing an unverifiable workbook when daily prices are unavailable.
+
+For local use, you can prefill the field by creating `web/local.config.js`:
 
 ```js
 window.ITR_ASSIST_MARKET_API_KEY = "your-key-here";

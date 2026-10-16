@@ -8,6 +8,7 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))  # use the real repo's itr_assist, identical to what's in the wheel
 
 SYNTH = os.path.join(os.path.dirname(__file__), "_synth")
+os.environ["ITR_ASSIST_CACHE_DIR"] = os.path.join(os.path.dirname(__file__), "_testrun", "data", "cache")
 
 pipeline_src = open(os.path.join(os.path.dirname(__file__), "_extracted_pipeline.py"), encoding="utf-8").read()
 
