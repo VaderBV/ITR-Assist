@@ -62,7 +62,7 @@ where = ["."]
 include = ["itr_assist*"]
 
 [tool.setuptools.package-data]
-itr_assist = ["*.json", "*.pdf"]
+itr_assist = ["*.json", "*.pdf", "data/*.csv"]
 
 [tool.pytest.ini_options]
 testpaths = ["itr_assist/tests"]

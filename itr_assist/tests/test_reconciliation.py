@@ -294,7 +294,10 @@ class TestAllocateSales(unittest.TestCase):
 
         sbi = SBIRateService()
         mkt = MarketDataService(auto_download=False)
-        mkt._price_cache["ACME"] = {date(2025, 12, 31): {"open": 100, "high": 100, "low": 100, "close": 100}}
+        mkt._price_cache["ACME"] = {
+            date(2025, 6, 10): {"open": 100, "high": 100, "low": 100, "close": 100},
+            date(2025, 12, 31): {"open": 100, "high": 100, "low": 100, "close": 100},
+        }
         engine = ValuationEngine(ledger=ledger, sbi_service=sbi, market_service=mkt)
 
         a3 = engine.compute_table_a3(2025, cy_dividends=None, cy_sales=enriched_sales)

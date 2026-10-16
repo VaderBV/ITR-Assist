@@ -29,11 +29,13 @@ class LotLedger:
         cy_end = date(calendar_year, 12, 31)
         return self.get_lots_active_in_window(cy_start, cy_end)
 
-    def get_shares_held_on_date(self, target_date: date) -> Tuple[float, List[ShareLot]]:
-        """Compute total shares held and list of active lots on a specific date."""
+    def get_shares_held_on_date(self, target_date: date, symbol: Optional[str] = None) -> Tuple[float, List[ShareLot]]:
+        """Shares held (and the lots holding them) at end of target_date, optionally for one ticker."""
         active: List[ShareLot] = []
         total_shares = 0.0
         for lot in self.lots:
+            if symbol is not None and lot.symbol != symbol:
+                continue
             if lot.acquisition_date <= target_date:
                 if lot.disposal_date is None or lot.disposal_date > target_date:
                     active.append(lot)
@@ -41,13 +43,13 @@ class LotLedger:
         return total_shares, active
 
     def allocate_dividends(self, dividends: List[DividendEvent]) -> List[DividendEvent]:
-        """Pro-rata allocate each dividend payment across active lots on that date."""
+        """Pro-rata allocate each dividend across the lots of that ticker that were entitled to
+        it - held on the record date when the statement provides one, else the pay date."""
         enriched_dividends: List[DividendEvent] = []
 
         for div in dividends:
-            # Total shares eligible on dividend record/pay date
-            total_shares, active_lots = self.get_shares_held_on_date(div.pay_date)
-            
+            total_shares, active_lots = self.get_shares_held_on_date(div.record_date or div.pay_date, div.symbol)
+
             allocations: Dict[str, float] = {}
             if total_shares > 0:
                 rate_per_share = div.gross_amount_usd / total_shares
@@ -60,10 +62,12 @@ class LotLedger:
                 symbol=div.symbol,
                 gross_amount_usd=div.gross_amount_usd,
                 tax_withheld_usd=div.tax_withheld_usd,
+                tax_deduction_date=div.tax_deduction_date,
                 record_date=div.record_date,
                 shares_count=total_shares,
                 rate_per_share=round(div.gross_amount_usd / total_shares, 4) if total_shares > 0 else 0.0,
-                lot_allocations=allocations
+                lot_allocations=allocations,
+                tax_line_found=div.tax_line_found,
             )
             enriched_dividends.append(enriched_div)
 
@@ -122,8 +126,15 @@ class LotLedger:
                     # are not meaningfully splittable - they are left on the remaining portion
                     # and mirrored (not re-derived) on the disposed sub-lot since neither feeds
                     # into any Table A3 valuation figure (only net_shares does).
+                    # Unique per split: two partial sales of one lot on the same day would
+                    # otherwise share an id and their proceeds would be counted twice.
+                    base_id = f"{lot.lot_id}-SOLD-{sale.sale_date.strftime('%Y%m%d')}"
+                    existing_ids = {l.lot_id for l in self.lots} | {l.lot_id for l in new_sub_lots}
+                    sub_id, seq = base_id, 2
+                    while sub_id in existing_ids:
+                        sub_id, seq = f"{base_id}-{seq}", seq + 1
                     disposed = ShareLot(
-                        lot_id=f"{lot.lot_id}-SOLD-{sale.sale_date.strftime('%Y%m%d')}",
+                        lot_id=sub_id,
                         symbol=lot.symbol,
                         plan_type=lot.plan_type,
                         acquisition_date=lot.acquisition_date,
@@ -161,6 +172,7 @@ class LotLedger:
                 matched_lot_id=next(iter(allocations)) if len(allocations) == 1 else None,
                 lot_allocations=allocations,
                 unmatched_quantity=max(0.0, remaining_to_match),
+                net_credit_usd=sale.net_credit_usd,
             ))
 
         return enriched_sales

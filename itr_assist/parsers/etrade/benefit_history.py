@@ -1,5 +1,6 @@
 """E*TRADE implementation of BaseBenefitHistoryParser."""
-from typing import List
+from datetime import date
+from typing import Dict, List, Tuple
 import pandas as pd
 
 from itr_assist.models import LotStatus, PlanType, ShareLot
@@ -93,6 +94,16 @@ class ETradeBenefitHistoryParser(BaseBenefitHistoryParser):
         lots: List[ShareLot] = []
         df = pd.read_excel(file_path, sheet_name="Restricted Stock")
 
+        # The grant's "Shares released" Event rows record what actually reached the account at
+        # each vest. They are the source of truth: under net settlement the employer keeps
+        # shares back for tax, yet the Vest Schedule row's "Released Qty" column still shows the
+        # full vested quantity (real data: 7-8 vested, 4-5 released from Nov 2024 onward).
+        released_events: Dict[Tuple[str, date], float] = {}
+        for _, ev in df[df["Record Type"].astype(str).str.strip() == "Event"].iterrows():
+            if str(ev.get("Event Type", "")).strip().lower() == "shares released" and not pd.isna(ev.get("Date")):
+                key = (str(ev.get("Grant Number", "")).strip(), parse_date(ev.get("Date")))
+                released_events[key] = released_events.get(key, 0.0) + float(ev.get("Qty. or Amount") or 0.0)
+
         current_symbol = ""
         i = 0
         while i < len(df):
@@ -109,27 +120,30 @@ class ETradeBenefitHistoryParser(BaseBenefitHistoryParser):
                 if vested_qty > 0.0:
                     grant_num = str(row.get("Grant Number", "")).strip()
                     vest_date = parse_date(row.get("Vest Date"))
-                    # "Released Qty" is the historical fact: shares actually credited to the
-                    # account at vest (after any share-based tax withholding). "Sellable Qty..1"
-                    # is NOT historical - it's the account's CURRENT remaining balance for this
-                    # tranche as of whenever BenefitHistory.xlsx was exported, so it silently
-                    # drops to 0 for any tranche already sold down by the export date, regardless
-                    # of how many shares were actually available at the time of a past sale.
-                    # Using it as net_shares would erase lots before allocate_sales() ever gets
-                    # a chance to FIFO-match them against real SaleEvents.
-                    released_qty = float(row.get("Released Qty", vested_qty) or vested_qty)
+                    # Shares actually credited at vest: the "Shares released" event (see above),
+                    # else the row's "Released Qty". Never "Sellable Qty..1" - that is the
+                    # CURRENT remaining balance at export time, already reduced by later sales.
+                    released_col = row.get("Released Qty")
+                    released_qty = released_events.get(
+                        (grant_num, vest_date),
+                        vested_qty if pd.isna(released_col) else float(released_col),
+                    )
                     tax_paid = clean_currency(row.get("Total Taxes Paid"))
                     withheld_qty = vested_qty - released_qty
 
-                    # Next row contains 'Tax Withholding' with Taxable Gain
+                    # Following 'Tax Withholding' rows carry the Taxable Gain (summed - a vest can
+                    # have several). This FMV is provisional: the gain also covers fractional
+                    # dividend-equivalent shares paid as cash, so gain/whole-shares overstates the
+                    # per-share FMV; the pipeline replaces it with the vest-day close when prices
+                    # are available (see itr_assist.pipeline.refine_vest_fmv).
                     vest_fmv = 0.0
+                    total_gain = 0.0
                     j = i + 1
                     while j < len(df) and str(df.iloc[j].get("Record Type", "")).strip() == "Tax Withholding":
-                        tax_row = df.iloc[j]
-                        taxable_gain = clean_currency(tax_row.get("Taxable Gain"))
-                        if taxable_gain > 0 and vested_qty > 0:
-                            vest_fmv = round(taxable_gain / vested_qty, 4)
+                        total_gain += clean_currency(df.iloc[j].get("Taxable Gain"))
                         j += 1
+                    if total_gain > 0:
+                        vest_fmv = round(total_gain / vested_qty, 4)
 
                     if vest_fmv == 0.0 and tax_paid > 0 and withheld_qty > 0:
                         vest_fmv = round(tax_paid / withheld_qty, 4)

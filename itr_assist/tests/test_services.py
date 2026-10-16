@@ -197,8 +197,8 @@ class TestValuationEngine(unittest.TestCase):
         self.assertEqual(res.closing_balance_usd, 2800.0)
         self.assertGreater(res.closing_balance_inr, 200000)
         self.assertGreaterEqual(res.peak_balance_inr, res.closing_balance_inr)
-        self.assertEqual(res.nature_of_amount, "D")
-        self.assertGreater(res.gross_amount_paid_credited_inr, 5000)
+        self.assertEqual(res.gross_amounts[0].nature, "D")
+        self.assertGreater(res.gross_amounts[0].amount_inr, 5000)
 
     def test_schedule_os_and_ftc_computation(self):
         """Verify Schedule OS advance tax buckets and Form 67 FTC claim."""

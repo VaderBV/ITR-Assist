@@ -5,6 +5,12 @@ from enum import Enum
 from typing import Dict, List, Optional
 
 
+# Prefix for any statutory field the source documents cannot supply (e.g. the employer's
+# address, the broker account's opening date). Written in place of a made-up value so the
+# workbook shows exactly what the taxpayer must fill in, and validation fails until they do.
+PLACEHOLDER_PREFIX = "TO BE FILLED"
+
+
 class PlanType(str, Enum):
     RSU = "RSU"
     ESPP = "ESPP"
@@ -37,6 +43,9 @@ class SaleEvent:
     # shares). Nonzero means gross_proceeds in lot_allocations understates the true sale
     # proceeds - surfaced as a validation finding rather than silently dropped.
     unmatched_quantity: float = 0.0
+    # Net cash actually credited to the account (statement "Credits" column: gross minus
+    # commission/fees). Gross proceeds stay quantity x price; this feeds the account's cash.
+    net_credit_usd: float = 0.0
 
 
 @dataclass
@@ -45,10 +54,14 @@ class DividendEvent:
     symbol: str
     gross_amount_usd: float
     tax_withheld_usd: float
+    tax_deduction_date: Optional[date] = None
     record_date: Optional[date] = None
     shares_count: Optional[float] = None
     rate_per_share: Optional[float] = None
     lot_allocations: Dict[str, float] = field(default_factory=dict)
+    # False when the statement showed no matching Tax Withholding line: tax_withheld_usd is
+    # then 0, never an assumed rate, and validation flags it for the taxpayer to confirm.
+    tax_line_found: bool = True
 
 
 @dataclass
@@ -89,6 +102,13 @@ class StatementPeriodSummary:
     dividends_received_usd: float = 0.0
     tax_withheld_usd: float = 0.0
     transfers_in_shares: float = 0.0
+    # Period-end positions from the statement's holdings section, keyed by ticker:
+    # quantity and the statement's own period-end share price (e.g. "QUALCOMM INC (QCOM)
+    # 33.000 $171.050 ..."). shares_held is the total quantity across all positions.
+    holdings_qty: Dict[str, float] = field(default_factory=dict)
+    holdings_price: Dict[str, float] = field(default_factory=dict)
+    # Interest income credited during the period (e.g. bank-deposit sweep interest).
+    interest_usd: float = 0.0
 
 
 @dataclass

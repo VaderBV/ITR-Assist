@@ -10,6 +10,19 @@ from itr_assist.services.sbi_rates import SBIRateService
 
 
 @dataclass
+class A2GrossAmount:
+    """One Table A2 "gross amount paid/credited" line. The CBDT schema allows a single
+    NatureOfAmount per DtlsForeignCustodialAcc row, so an account credited with dividends,
+    interest and sale proceeds is reported as one row per nature (peak/closing repeated)."""
+    nature: str        # CBDT NatureOfAmount: "D" dividend, "I" interest, "S" sale proceeds, "O" other, "N" none
+    amount_usd: float
+    amount_inr: int
+    rate_inr: float
+    rate_date: date
+    source: str
+
+
+@dataclass
 class ScheduleFATableA2Result:
     country_name: str
     country_code: str
@@ -27,12 +40,10 @@ class ScheduleFATableA2Result:
     closing_balance_inr: int
     closing_date: date
     closing_rate_inr: float
-    gross_amount_paid_credited_inr: int
-    nature_of_amount: str
-    gross_amount_paid_credited_usd: float = 0.0
+    gross_amounts: List[A2GrossAmount] = field(default_factory=list)
+    peak_degraded: bool = False   # True when daily prices were unavailable and the peak is a floor estimate
     source_peak: str = "Broker Statement (Peak Account Value) & SBI TTBR Sheet"
     source_closing: str = "Broker Statement (Ending Net Portfolio Value) & SBI TTBR Sheet"
-    source_gross: str = "Broker Calendar Year Statement Dividends & Form 1042-S Box 2"
 
 
 @dataclass
@@ -72,6 +83,13 @@ class ScheduleFATableA3LotResult:
     source_dividends: str = "Client Statements Account Activity"
     gross_proceeds_usd: float = 0.0
     source_proceeds: str = ""
+    # Schedule FA income columns (11: dividends, 12: proceeds) convert at the TTBR of the
+    # calendar year's closing date (31-Dec), per the CBDT Schedule FA guide.
+    income_rate_inr: float = 0.0
+    income_rate_date: Optional[date] = None
+    peak_degraded: bool = False     # peak not from daily prices in the holding window
+    closing_degraded: bool = False  # closing price not from 31-Dec market/statement data
+    fmv_source: str = ""            # how vest_fmv_usd was established (vest-day close vs derived)
 
 
 @dataclass
@@ -80,6 +98,7 @@ class DividendTaxResult:
     symbol: str
     gross_usd: float
     tax_usd: float
+    tax_deduction_date: date
     preceding_month_end: date
     rule_115_rate: float
     gross_inr: int
@@ -114,6 +133,11 @@ class FTCResult:
     gross_foreign_income_usd: float = 0.0
     foreign_tax_paid_usd: float = 0.0
     tax_relief_claimed_usd: float = 0.0
+    # Inputs/caps behind the relief: Rule 128(5)(i) limits credit to the lower of the Indian
+    # tax payable on this income (at indian_tax_rate) and the foreign tax paid, and India-US
+    # DTAA Art. 10(2)(b) caps the creditable US tax at dtaa_rate_cap x gross dividend.
+    indian_tax_rate: float = 0.312
+    dtaa_rate_cap: float = 0.25
     source_document: str = "IRS Form 1042-S (Box 2 & Box 7a) & E*TRADE Statements"
 
 
@@ -206,16 +230,12 @@ class ValuationEngine:
             peak_val_usd = round(lot.net_shares * peak_info["peak_price_usd"], 2)
             close_val_usd = round(lot.net_shares * close_info["closing_price_usd"], 2)
             src_acq = f"Benefit History Spreadsheet (Tranche Vest {lot.acquisition_date.strftime('%Y-%m-%d')})"
-            if peak_info.get("degraded"):
-                src_peak = f"Market data unavailable - approximated using vest FMV (${peak_info['peak_price_usd']:.2f}) & SBI TTBR ₹{peak_info['peak_rate_inr']:.2f}"
-            else:
-                src_peak = f"Yahoo Finance {lot.symbol} Close (${peak_info['peak_price_usd']:.2f} on {peak_info['peak_date'].strftime('%Y-%m-%d')}) & SBI TTBR ₹{peak_info['peak_rate_inr']:.2f}"
+            src_peak = f"Yahoo Finance verified daily {lot.symbol} close (${peak_info['peak_price_usd']:.2f} on {peak_info['peak_date'].strftime('%Y-%m-%d')}) & SBI TTBR ₹{peak_info['peak_rate_inr']:.2f}"
             if close_info.get("sold_before_year_end"):
                 src_close = f"Lot fully sold before Dec 31, {calendar_year} - closing balance is $0 by definition (no market data lookup needed)"
-            elif close_info.get("degraded"):
-                src_close = f"Market data unavailable - approximated using vest FMV (${close_info['closing_price_usd']:.2f}) & SBI TTBR ₹{close_info['closing_rate_inr']:.2f}"
             else:
-                src_close = f"Yahoo Finance {lot.symbol} Close (${close_info['closing_price_usd']:.2f} on {close_info['closing_date'].strftime('%Y-%m-%d')}) & SBI TTBR ₹{close_info['closing_rate_inr']:.2f}"
+                price_date = close_info.get("closing_price_date", close_info["closing_date"])
+                src_close = f"Yahoo Finance verified {lot.symbol} close (${close_info['closing_price_usd']:.2f} on {price_date.strftime('%Y-%m-%d')}) & 31-Dec SBI TTBR ₹{close_info['closing_rate_inr']:.2f}"
             src_div = f"Client Statements Account Activity (Dividends pro-rata)"
             src_proceeds = (
                 f"Client Statements Account Activity (Sale proceeds, Rule 115 cl.(f) preceding-month-end rate)"
@@ -257,7 +277,11 @@ class ValuationEngine:
                 source_peak=src_peak,
                 source_closing=src_close,
                 source_dividends=src_div,
-                source_proceeds=src_proceeds
+                source_proceeds=src_proceeds,
+                income_rate_inr=self.sbi.get_rate(date(calendar_year, 12, 31)),
+                income_rate_date=date(calendar_year, 12, 31),
+                peak_degraded=False,
+                closing_degraded=False,
             )
             results.append(res)
 
@@ -283,12 +307,30 @@ class ValuationEngine:
         peak_date = cy_start
         peak_rate = close_rate
 
-        primary_symbol = self.ledger.lots[0].symbol if self.ledger.lots else "STOCK"
-        self.mkt.load_symbol(primary_symbol)
-        for d, ohlc in self.mkt._price_cache[primary_symbol].items():
-            if cy_start <= d <= cy_end:
-                shs, _ = self.ledger.get_shares_held_on_date(d)
-                day_usd = shs * ohlc["close"]  # EOD close valuation
+        symbols = sorted({lot.symbol for lot in self.ledger.lots if lot.symbol})
+        closes_by_symbol = {
+            symbol: self.mkt.daily_closes(symbol, cy_start, cy_end)
+            for symbol in symbols
+        }
+        valuation_dates = sorted({d for closes in closes_by_symbol.values() for d in closes})
+        if symbols and not valuation_dates:
+            raise ValueError(
+                f"No verified daily market prices are available for {', '.join(symbols)} in {calendar_year}."
+            )
+
+        last_close: Dict[str, float] = {}
+        for d in valuation_dates:
+            day_usd = dec_summary.cash_balance_usd
+            complete = True
+            for symbol in symbols:
+                if d in closes_by_symbol[symbol]:
+                    last_close[symbol] = closes_by_symbol[symbol][d]
+                shares, _ = self.ledger.get_shares_held_on_date(d, symbol)
+                if shares > 0 and symbol not in last_close:
+                    complete = False
+                    break
+                day_usd += shares * last_close.get(symbol, 0.0)
+            if complete:
                 day_rate = self.sbi.get_rate(d)
                 day_inr = day_usd * day_rate
                 if day_inr > peak_inr:
@@ -304,7 +346,7 @@ class ValuationEngine:
             peak_date = cy_end
             peak_rate = close_rate
 
-        # 3. Total Gross amount paid/credited in CY (Payment Date SBI TTBR)
+        # 3. Gross amounts paid/credited in CY. Each nature is a separate CBDT A2 row.
         tot_div_usd = 0.0
         tot_div_inr = 0
         for d in cy_dividends:
@@ -314,16 +356,41 @@ class ValuationEngine:
                 _, pay_rate = self.sbi.get_rule_115_dividend_rate(d.pay_date)
                 tot_div_inr += round(d.gross_amount_usd * pay_rate)
 
-        shs_divisor = max(1.0, dec_summary.shares_held)
-        if primary_symbol in self.mkt.unavailable_symbols:
-            src_peak_a2 = (
-                f"{self.broker_name} Statement (market data unavailable - peak approximated "
-                f"as the Dec {calendar_year} closing balance, SBI TTBR ₹{peak_rate:.2f})"
-            )
-        else:
-            src_peak_a2 = f"{self.broker_name} Statement & Yahoo Finance {primary_symbol} Close (${peak_usd / shs_divisor:.2f} on {peak_date.strftime('%Y-%m-%d')}) & SBI TTBR ₹{peak_rate:.2f}"
+        src_peak_a2 = (
+            f"{self.broker_name} Statement cash balance plus verified daily closes for "
+            f"{', '.join(symbols) or 'account holdings'} "
+            f"cash balance on {peak_date.strftime('%Y-%m-%d')} & SBI TTBR ₹{peak_rate:.2f}"
+        )
         src_close_a2 = f"{self.broker_name} Statement (Dec {calendar_year}, Page 1: Ending Net Portfolio Value) & SBI TTBR Sheet (31-Dec-{calendar_year})"
         src_gross_a2 = f"{self.broker_name} CY {calendar_year} Statement Account Activity & IRS Form 1042-S Box 2"
+        gross_amounts = []
+        if tot_div_usd or tot_div_inr:
+            gross_amounts.append(A2GrossAmount(
+                nature="D",
+                amount_usd=round(tot_div_usd, 2),
+                amount_inr=tot_div_inr,
+                rate_inr=0.0,
+                rate_date=cy_end,
+                source=src_gross_a2,
+            ))
+        if dec_summary.interest_usd:
+            gross_amounts.append(A2GrossAmount(
+                nature="I",
+                amount_usd=round(dec_summary.interest_usd, 2),
+                amount_inr=round(dec_summary.interest_usd * close_rate),
+                rate_inr=close_rate,
+                rate_date=cy_end,
+                source=f"{self.broker_name} statement interest credits",
+            ))
+        if not gross_amounts:
+            gross_amounts.append(A2GrossAmount(
+                nature="N",
+                amount_usd=0.0,
+                amount_inr=0,
+                rate_inr=0.0,
+                rate_date=cy_end,
+                source="No gross amount paid or credited during the calendar year",
+            ))
 
         return ScheduleFATableA2Result(
             country_name="UNITED STATES OF AMERICA",
@@ -342,19 +409,18 @@ class ValuationEngine:
             closing_balance_inr=closing_inr,
             closing_date=cy_end,
             closing_rate_inr=close_rate,
-            gross_amount_paid_credited_inr=tot_div_inr,
-            nature_of_amount="D",
-            gross_amount_paid_credited_usd=round(tot_div_usd, 2),
+            gross_amounts=gross_amounts,
+            peak_degraded=False,
             source_peak=src_peak_a2,
             source_closing=src_close_a2,
-            source_gross=src_gross_a2
         )
 
     def compute_schedule_os_and_ftc(
         self,
         fy_dividends: List[DividendEvent],
-        indian_tax_rate: float = 0.312,  # 30% slab + 4% cess
-        calendar_year: Optional[int] = None
+        indian_tax_rate: float = 0.312,  # taxpayer's rate on this income; default 30% slab + 4% cess
+        calendar_year: Optional[int] = None,
+        dtaa_rate_cap: float = 0.25,
     ) -> Tuple[ScheduleOSResult, FTCResult]:
         """Compute Schedule OS dividend buckets and Foreign Tax Credit claim for the Indian FY starting 1-Apr-calendar_year.
 
@@ -388,7 +454,8 @@ class ValuationEngine:
             gross_inr = round(d.gross_amount_usd * r115)
 
             # Rule 128(5)(ii): TTBR on last day of month preceding month tax was paid/deducted
-            _, r128 = self.sbi.get_rule_128_rate(d.pay_date)
+            tax_deduction_date = d.tax_deduction_date or d.pay_date
+            _, r128 = self.sbi.get_rule_128_rate(tax_deduction_date)
             tax_inr = round(d.tax_withheld_usd * r128)
 
             total_gross_inr += gross_inr
@@ -419,6 +486,7 @@ class ValuationEngine:
                 symbol=d.symbol,
                 gross_usd=d.gross_amount_usd,
                 tax_usd=d.tax_withheld_usd,
+                tax_deduction_date=tax_deduction_date,
                 preceding_month_end=p_month_end,
                 rule_115_rate=r115,
                 gross_inr=gross_inr,
@@ -438,9 +506,13 @@ class ValuationEngine:
             items=items
         )
 
-        # Compute FTC under Rule 128 / DTAA Section 90 Article 10
+        # FTC: Rule 128(5)(i) allows the lower of the Indian tax payable on this income and the
+        # foreign tax paid; India-US DTAA Art. 10(2)(b) caps creditable US tax on dividends at
+        # dtaa_rate_cap of the gross ("excess shall be ignored"). Same caps in INR and USD.
         indian_tax_est = round(total_gross_inr * indian_tax_rate)
-        ftc_claimed = min(total_tax_paid_inr, indian_tax_est)
+        dtaa_cap_inr = round(total_gross_inr * dtaa_rate_cap)
+        ftc_claimed = min(total_tax_paid_inr, indian_tax_est, dtaa_cap_inr)
+        ftc_claimed_usd = round(min(total_tax_paid_usd, total_gross_usd * indian_tax_rate, total_gross_usd * dtaa_rate_cap), 2)
 
         ftc_res = FTCResult(
             country_name="UNITED STATES OF AMERICA",
@@ -454,8 +526,10 @@ class ValuationEngine:
             tax_relief_claimed_inr=ftc_claimed,
             gross_foreign_income_usd=round(total_gross_usd, 2),
             foreign_tax_paid_usd=round(total_tax_paid_usd, 2),
-            tax_relief_claimed_usd=round(total_tax_paid_usd, 2),
-            source_document="IRS Form 1042-S (Box 2 & Box 7a) & E*TRADE Statements"
+            tax_relief_claimed_usd=ftc_claimed_usd,
+            indian_tax_rate=indian_tax_rate,
+            dtaa_rate_cap=dtaa_rate_cap,
+            source_document="IRS Form 1042-S (Box 2 & Box 7a) & broker statements"
         )
 
         return os_res, ftc_res
