@@ -11,9 +11,18 @@ class ETradeBenefitHistoryParser(BaseBenefitHistoryParser):
     """Parses E*TRADE BenefitHistory.xlsx for RSU and ESPP acquisitions."""
 
     def parse(self, file_path: str) -> List[ShareLot]:
-        """Extract all vested RSU and purchased ESPP lots from E*TRADE BenefitHistory.xlsx."""
+        """Extract all vested RSU and purchased ESPP lots from E*TRADE BenefitHistory.xlsx.
+
+        Not every account has an ESPP sheet (RSU-only accounts don't) - try it and skip
+        quietly if the sheet doesn't exist, rather than requiring a separate sheet-list call
+        (which real workbooks support but test fixtures mocking read_excel directly don't).
+        """
         lots: List[ShareLot] = []
-        lots.extend(self._parse_espp(file_path))
+        try:
+            lots.extend(self._parse_espp(file_path))
+        except ValueError as e:
+            if "ESPP" not in str(e):
+                raise
         lots.extend(self._parse_rsu(file_path))
         lots.sort(key=lambda x: x.acquisition_date)
         return lots
@@ -100,9 +109,17 @@ class ETradeBenefitHistoryParser(BaseBenefitHistoryParser):
                 if vested_qty > 0.0:
                     grant_num = str(row.get("Grant Number", "")).strip()
                     vest_date = parse_date(row.get("Vest Date"))
-                    sellable_qty = float(row.get("Sellable Qty..1", 0.0) or 0.0)
+                    # "Released Qty" is the historical fact: shares actually credited to the
+                    # account at vest (after any share-based tax withholding). "Sellable Qty..1"
+                    # is NOT historical - it's the account's CURRENT remaining balance for this
+                    # tranche as of whenever BenefitHistory.xlsx was exported, so it silently
+                    # drops to 0 for any tranche already sold down by the export date, regardless
+                    # of how many shares were actually available at the time of a past sale.
+                    # Using it as net_shares would erase lots before allocate_sales() ever gets
+                    # a chance to FIFO-match them against real SaleEvents.
+                    released_qty = float(row.get("Released Qty", vested_qty) or vested_qty)
                     tax_paid = clean_currency(row.get("Total Taxes Paid"))
-                    withheld_qty = vested_qty - sellable_qty
+                    withheld_qty = vested_qty - released_qty
 
                     # Next row contains 'Tax Withholding' with Taxable Gain
                     vest_fmv = 0.0
@@ -120,7 +137,9 @@ class ETradeBenefitHistoryParser(BaseBenefitHistoryParser):
                     period = int(row.get("Vest Period", 1.0) or 1.0)
                     lot_sym = current_symbol or "STOCK"
                     lot_id = f"{lot_sym}-{grant_num}-T{period}-{vest_date.strftime('%Y%m%d')}"
-                    status = LotStatus.ACTIVE if sellable_qty > 0 else LotStatus.FULLY_SOLD
+                    # Disposal is determined later by allocate_sales() matching real SaleEvents
+                    # parsed from statements, not by this (current-snapshot) export.
+                    status = LotStatus.ACTIVE if released_qty > 0 else LotStatus.FULLY_SOLD
 
                     lot = ShareLot(
                         lot_id=lot_id,
@@ -129,10 +148,10 @@ class ETradeBenefitHistoryParser(BaseBenefitHistoryParser):
                         acquisition_date=vest_date,
                         gross_shares=vested_qty,
                         withheld_shares=withheld_qty,
-                        net_shares=sellable_qty,
+                        net_shares=released_qty,
                         vest_fmv_usd=vest_fmv,
                         cost_basis_per_share_usd=vest_fmv,
-                        remaining_shares=sellable_qty,
+                        remaining_shares=released_qty,
                         status=status,
                         grant_number=grant_num,
                         notes=f"RSU Vest Grant {grant_num} Tranche {period}"

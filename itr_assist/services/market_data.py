@@ -11,16 +11,28 @@ from itr_assist.services.sbi_rates import SBIRateService
 
 DEFAULT_CACHE_DIR = os.path.join("data", "cache")
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+# Fallback for browser builds: Yahoo Finance sends no CORS headers, so a direct in-browser
+# fetch is always blocked (confirmed - not an intermittent issue). Twelve Data's free tier
+# does support direct browser calls (Access-Control-Allow-Origin: *, confirmed) and works for
+# any public symbol, not just one company - the user supplies their own free key (no backend
+# of ours is involved, never shipped/committed in source).
+TWELVE_DATA_URL = "https://api.twelvedata.com/time_series"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
 
 class MarketDataService:
     """Manages historical daily stock prices with offline caching."""
 
-    def __init__(self, cache_dir: str = DEFAULT_CACHE_DIR, auto_download: bool = True):
+    def __init__(self, cache_dir: str = DEFAULT_CACHE_DIR, auto_download: bool = True, api_key: Optional[str] = None):
         self.cache_dir = cache_dir
         self.auto_download = auto_download
+        self.api_key = api_key
         self._price_cache: Dict[str, Dict[date, Dict[str, float]]] = {}
+        # Symbols we couldn't get live/cached daily prices for (e.g. a browser build where the
+        # market data provider blocks direct browser requests). Callers use this to fall back
+        # to a defensible approximation instead of crashing - see get_peak_for_lot /
+        # get_closing_for_lot and ValuationEngine.compute_table_a2.
+        self.unavailable_symbols: set = set()
 
     def _get_cache_path(self, symbol: str) -> str:
         return os.path.join(self.cache_dir, f"{symbol}_prices.json")
@@ -41,7 +53,13 @@ class MarketDataService:
                 pass
 
         if not os.path.exists(cache_path):
-            raise FileNotFoundError(f"Market data cache for {symbol} not found at {cache_path}")
+            # No live source worked and nothing is cached - degrade instead of crashing the
+            # whole generation. Callers that need a price (get_peak_for_lot,
+            # get_closing_for_lot, ValuationEngine.compute_table_a2) fall back to a defensible
+            # approximation when they see this symbol in unavailable_symbols.
+            self.unavailable_symbols.add(symbol)
+            self._price_cache[symbol] = {}
+            return
 
         with open(cache_path, "r", encoding="utf-8") as f:
             raw_data = json.load(f)
@@ -59,8 +77,26 @@ class MarketDataService:
         self._price_cache[symbol] = parsed
 
     def _fetch_and_cache(self, symbol: str) -> None:
-        """Fetch historical chart data from Yahoo Finance and cache locally."""
+        """Fetch historical daily prices and cache locally.
+
+        Tries Yahoo Finance first (works fine for the desktop/CLI build, no CORS
+        restriction there). If that fails - which it always will in a browser build, since
+        Yahoo sends no Access-Control-Allow-Origin header - and the caller supplied an API
+        key, falls back to Twelve Data (confirmed CORS-open, works for any public symbol).
+        """
         os.makedirs(self.cache_dir, exist_ok=True)
+        try:
+            daily_dict = self._fetch_from_yahoo(symbol)
+        except Exception:
+            if not self.api_key:
+                raise
+            daily_dict = self._fetch_from_twelve_data(symbol)
+
+        cache_path = self._get_cache_path(symbol)
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(daily_dict, f, indent=2)
+
+    def _fetch_from_yahoo(self, symbol: str) -> Dict[str, Dict[str, float]]:
         # Fetch 5 years of daily data
         params = {"range": "5y", "interval": "1d"}
         url = YAHOO_CHART_URL.format(symbol=symbol)
@@ -89,15 +125,40 @@ class MarketDataService:
                 "low": round(l, 4),
                 "close": round(c, 4)
             }
+        return daily_dict
 
-        cache_path = self._get_cache_path(symbol)
-        with open(cache_path, "w", encoding="utf-8") as f:
-            json.dump(daily_dict, f, indent=2)
+    def _fetch_from_twelve_data(self, symbol: str) -> Dict[str, Dict[str, float]]:
+        params = {
+            "symbol": symbol,
+            "interval": "1day",
+            "outputsize": 5000,  # ~ 5 years of trading days, same window as the Yahoo path
+            "apikey": self.api_key,
+            "format": "JSON",
+        }
+        resp = requests.get(TWELVE_DATA_URL, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if data.get("status") == "error" or "values" not in data:
+            raise ValueError(f"Twelve Data error for {symbol}: {data.get('message', data)}")
+
+        daily_dict: Dict[str, Dict[str, float]] = {}
+        for row in data["values"]:
+            daily_dict[row["datetime"]] = {
+                "open": round(float(row["open"]), 4),
+                "high": round(float(row["high"]), 4),
+                "low": round(float(row["low"]), 4),
+                "close": round(float(row["close"]), 4),
+            }
+        return daily_dict
 
     def get_prices(self, target_date: date, symbol: str) -> Dict[str, float]:
         """Return OHLC prices for target_date (or step back to most recent trading day)."""
         self.load_symbol(symbol)
         cache = self._price_cache[symbol]
+
+        if not cache:
+            raise ValueError(f"No price data available for {symbol} (market data unavailable)")
 
         if target_date in cache:
             return cache[target_date]
@@ -136,6 +197,28 @@ class MarketDataService:
         if lot.disposal_date and lot.disposal_date < cy_end:
             active_end = lot.disposal_date
 
+        if lot.symbol in self.unavailable_symbols:
+            # No daily prices available (e.g. browser build, provider blocked) - fall back to
+            # the lot's own known vest FMV as a flat, defensible (non-zero) approximation
+            # rather than crashing the whole generation. Not day-by-day accurate; flagged via
+            # "degraded" so callers can surface this in the source/notes text.
+            #
+            # Uses active_end (not active_start) for the rate date: get_closing_for_lot uses
+            # the same vest_fmv_usd price at cy_end (or 0 if sold before cy_end), so matching
+            # the date here keeps Peak >= Closing true by construction instead of depending on
+            # how the SBI rate happened to move between acquisition and Dec 31 - a lot bought
+            # when the rupee was stronger would otherwise show a LOWER peak than its own
+            # closing balance, violating the Table A3 invariant.
+            ttbr = sbi_service.get_rate(active_end)
+            return {
+                "peak_balance_inr": round(lot.net_shares * lot.vest_fmv_usd * ttbr),
+                "peak_date": active_end,
+                "peak_price_usd": lot.vest_fmv_usd,
+                "peak_rate_inr": ttbr,
+                "shares": lot.net_shares,
+                "degraded": True,
+            }
+
         peak_inr = -1.0
         peak_date = active_start
         peak_price_usd = 0.0
@@ -158,7 +241,8 @@ class MarketDataService:
             "peak_date": peak_date,
             "peak_price_usd": peak_price_usd,
             "peak_rate_inr": peak_rate_inr,
-            "shares": lot.net_shares
+            "shares": lot.net_shares,
+            "degraded": False,
         }
 
     def get_closing_for_lot(
@@ -172,14 +256,32 @@ class MarketDataService:
         """
         cy_end = date(calendar_year, 12, 31)
 
-        # If sold before Dec 31, closing balance is 0
+        # If sold before Dec 31, closing balance is 0 - this is a real $0 by definition (the
+        # lot no longer existed on Dec 31), not a missing-data placeholder. Flagged via
+        # "sold_before_year_end" so callers don't attribute it to a (never-made) market data
+        # lookup, which would misleadingly read like a failed fetch.
         if lot.disposal_date and lot.disposal_date < cy_end:
             return {
                 "closing_balance_inr": 0,
                 "closing_date": cy_end,
                 "closing_price_usd": 0.0,
                 "closing_rate_inr": sbi_service.get_rate(cy_end),
-                "shares": 0.0
+                "shares": 0.0,
+                "degraded": False,
+                "sold_before_year_end": True,
+            }
+
+        self.load_symbol(lot.symbol)
+        if lot.symbol in self.unavailable_symbols:
+            # Same fallback as get_peak_for_lot - use vest FMV as a defensible approximation.
+            ttbr = sbi_service.get_rate(cy_end)
+            return {
+                "closing_balance_inr": round(lot.net_shares * lot.vest_fmv_usd * ttbr),
+                "closing_date": cy_end,
+                "closing_price_usd": lot.vest_fmv_usd,
+                "closing_rate_inr": ttbr,
+                "shares": lot.net_shares,
+                "degraded": True,
             }
 
         ohlc = self.get_prices(cy_end, lot.symbol)
@@ -192,5 +294,6 @@ class MarketDataService:
             "closing_date": cy_end,
             "closing_price_usd": close_price,
             "closing_rate_inr": ttbr,
-            "shares": lot.net_shares
+            "shares": lot.net_shares,
+            "degraded": False,
         }

@@ -257,7 +257,10 @@ class TestITRWorkbookGenerator(unittest.TestCase):
         self.assertAlmostEqual(ws["X5"].value, 0.0, places=1)      # Dec 31 Close Price
         self.assertEqual(ws["Y5"].value, "2025-12-31")             # Dec 31 Date
         self.assertAlmostEqual(ws["Z5"].value, 89.47, places=1)    # Dec 31 SBI Rate
-        self.assertIn("Yahoo Finance", ws["AA5"].value)            # Source Closing
+        # This lot was sold before Dec 31, so closing is a real $0 by definition, not a Yahoo
+        # Finance lookup - the source text must say so plainly rather than implying a (never
+        # made) market data fetch returned $0.
+        self.assertIn("sold before Dec 31", ws["AA5"].value)       # Source Closing
 
         # Gross Dividends & Sold Lot Flag
         self.assertEqual(ws["AB5"].value, 1229)                    # Gross Dividends INR (Col 11)

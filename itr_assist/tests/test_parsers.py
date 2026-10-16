@@ -220,6 +220,7 @@ class TestDocumentParsers(unittest.TestCase):
                 "Grant Number": "G100",
                 "Vest Date": "2024-05-15",
                 "Vested Qty..1": 15.0,
+                "Released Qty": 10.0,  # 5 shares withheld for tax at vest
                 "Sellable Qty..1": 10.0,
                 "Total Taxes Paid": "$500.00",
             },

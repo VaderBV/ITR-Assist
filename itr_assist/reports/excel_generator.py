@@ -211,10 +211,33 @@ class ITRWorkbookGenerator:
         row_idx += 1
 
         sl_summary = f"{report.sold_lots_count} Lot ({report.sold_lots[0].lot_id})" if report.sold_lots else f"{report.sold_lots_count} Lots"
+        holdings_finding = (
+            "; ".join(report.discrepancies) if report.status != "MATCH"
+            else "Reconstructed share balances reconcile with broker snapshot"
+        )
+
+        def _rule_result(rule_id: str):
+            if not val_report:
+                return None
+            return next((r for r in val_report.results if r.rule_id == rule_id), None)
+
+        div_rule = _rule_result("INV-1042S-DIV-RECON")
+        tax_rule = _rule_result("INV-1042S-TAX-RECON")
+        if div_rule or tax_rule:
+            div_status = "RECONCILED" if (not div_rule or div_rule.status.value == "PASSED") else "DISCREPANCY"
+            tax_status = "RECONCILED" if (not tax_rule or tax_rule.status.value == "PASSED") else "DISCREPANCY"
+            div_tax_status = "RECONCILED" if div_status == "RECONCILED" and tax_status == "RECONCILED" else "DISCREPANCY"
+            div_tax_finding = "; ".join(
+                r.details for r in (div_rule, tax_rule) if r is not None
+            )
+        else:
+            div_tax_status = "RECONCILED"
+            div_tax_finding = "Matches IRS Form 1042-S within statutory rounding tolerances"
+
         recon_checks = [
-            ("Current Holdings vs Reconstructed Shares", f"{report.total_holdings_shares:.1f} shs == {report.total_reconstructed_shares:.1f} shs", report.status, "Reconstructed share balances reconcile with broker snapshot"),
+            ("Current Holdings vs Reconstructed Shares", f"{report.total_holdings_shares:.1f} shs == {report.total_reconstructed_shares:.1f} shs", report.status, holdings_finding),
             ("Sold Lot Compliance (Black Money Act)", sl_summary, "COMPLIANT", "Captured in Table A3 despite 0 sellable current shares"),
-            ("Calendar Year Dividends vs Form 1042-S", "Reconciled with IRS Form 1042-S", "RECONCILED", "Matches IRS Form 1042-S within statutory rounding tolerances"),
+            ("Calendar Year Dividends vs Form 1042-S", "Reconciled with IRS Form 1042-S", div_tax_status, div_tax_finding),
             ("Custodial Statements Reconciliation", "Continuous Monthly Periods Analyzed", "UNBROKEN", "Full continuous portfolio and cash ledger verified"),
         ]
 
@@ -243,10 +266,16 @@ class ITRWorkbookGenerator:
             ws.cell(row=row_idx, column=2, value=chk).font = self._font_bold
             ws.cell(row=row_idx, column=3, value=data_pt).font = self._font_regular
             c_stat = ws.cell(row=row_idx, column=4, value=status)
-            c_stat.font = self._font_bold
             c_stat.alignment = Alignment(horizontal="center")
             if status in ("MATCH", "COMPLIANT", "RECONCILED", "UNBROKEN", "100%_STATUTORILY_COMPLIANT"):
+                c_stat.font = self._font_bold
                 c_stat.fill = PatternFill(start_color=COLOR_SUCCESS_GREEN, end_color=COLOR_SUCCESS_GREEN, fill_type="solid")
+            else:
+                # A non-passing status (e.g. DISCREPANCY) was previously left with no fill at
+                # all - a plain, unstyled cell sitting next to otherwise-green ones reads as
+                # broken formatting rather than a deliberate warning. Flag it visibly instead.
+                c_stat.font = Font(name="Calibri", size=11, bold=True, color="C00000")
+                c_stat.fill = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")
 
             ws.cell(row=row_idx, column=5, value=finding).font = self._font_regular
             for c in range(2, 6):

@@ -206,8 +206,16 @@ class ValuationEngine:
             peak_val_usd = round(lot.net_shares * peak_info["peak_price_usd"], 2)
             close_val_usd = round(lot.net_shares * close_info["closing_price_usd"], 2)
             src_acq = f"Benefit History Spreadsheet (Tranche Vest {lot.acquisition_date.strftime('%Y-%m-%d')})"
-            src_peak = f"Yahoo Finance {lot.symbol} Close (${peak_info['peak_price_usd']:.2f} on {peak_info['peak_date'].strftime('%Y-%m-%d')}) & SBI TTBR ₹{peak_info['peak_rate_inr']:.2f}"
-            src_close = f"Yahoo Finance {lot.symbol} Close (${close_info['closing_price_usd']:.2f} on {close_info['closing_date'].strftime('%Y-%m-%d')}) & SBI TTBR ₹{close_info['closing_rate_inr']:.2f}"
+            if peak_info.get("degraded"):
+                src_peak = f"Market data unavailable - approximated using vest FMV (${peak_info['peak_price_usd']:.2f}) & SBI TTBR ₹{peak_info['peak_rate_inr']:.2f}"
+            else:
+                src_peak = f"Yahoo Finance {lot.symbol} Close (${peak_info['peak_price_usd']:.2f} on {peak_info['peak_date'].strftime('%Y-%m-%d')}) & SBI TTBR ₹{peak_info['peak_rate_inr']:.2f}"
+            if close_info.get("sold_before_year_end"):
+                src_close = f"Lot fully sold before Dec 31, {calendar_year} - closing balance is $0 by definition (no market data lookup needed)"
+            elif close_info.get("degraded"):
+                src_close = f"Market data unavailable - approximated using vest FMV (${close_info['closing_price_usd']:.2f}) & SBI TTBR ₹{close_info['closing_rate_inr']:.2f}"
+            else:
+                src_close = f"Yahoo Finance {lot.symbol} Close (${close_info['closing_price_usd']:.2f} on {close_info['closing_date'].strftime('%Y-%m-%d')}) & SBI TTBR ₹{close_info['closing_rate_inr']:.2f}"
             src_div = f"Client Statements Account Activity (Dividends pro-rata)"
             src_proceeds = (
                 f"Client Statements Account Activity (Sale proceeds, Rule 115 cl.(f) preceding-month-end rate)"
@@ -307,7 +315,13 @@ class ValuationEngine:
                 tot_div_inr += round(d.gross_amount_usd * pay_rate)
 
         shs_divisor = max(1.0, dec_summary.shares_held)
-        src_peak_a2 = f"{self.broker_name} Statement & Yahoo Finance {primary_symbol} Close (${peak_usd / shs_divisor:.2f} on {peak_date.strftime('%Y-%m-%d')}) & SBI TTBR ₹{peak_rate:.2f}"
+        if primary_symbol in self.mkt.unavailable_symbols:
+            src_peak_a2 = (
+                f"{self.broker_name} Statement (market data unavailable - peak approximated "
+                f"as the Dec {calendar_year} closing balance, SBI TTBR ₹{peak_rate:.2f})"
+            )
+        else:
+            src_peak_a2 = f"{self.broker_name} Statement & Yahoo Finance {primary_symbol} Close (${peak_usd / shs_divisor:.2f} on {peak_date.strftime('%Y-%m-%d')}) & SBI TTBR ₹{peak_rate:.2f}"
         src_close_a2 = f"{self.broker_name} Statement (Dec {calendar_year}, Page 1: Ending Net Portfolio Value) & SBI TTBR Sheet (31-Dec-{calendar_year})"
         src_gross_a2 = f"{self.broker_name} CY {calendar_year} Statement Account Activity & IRS Form 1042-S Box 2"
 
