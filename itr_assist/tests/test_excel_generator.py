@@ -273,16 +273,14 @@ class TestITRWorkbookGenerator(unittest.TestCase):
         self.assertIn("Sold Lot", ws["AH4"].value)                 # Sold Lot Header
         self.assertEqual(ws["AH5"].value, "YES (Sold 2025)")       # Sold Lot Flag - real disposal_date (2025-06-15) year, not a hardcoded guess
 
-        # Check total formulas on row 8
-        self.assertEqual(ws["J8"].value, "=SUM(J5:J7)")            # Initial Value INR Total
-        self.assertEqual(ws["K8"].value, "=SUM(K5:K7)")            # Initial Cost USD Total
-        self.assertEqual(ws["L8"].value, "=SUM(L5:L7)")            # Shares Total
-        self.assertEqual(ws["P8"].value, "=SUM(P5:P7)")            # Peak Balance INR Total
-        self.assertEqual(ws["Q8"].value, "=SUM(Q5:Q7)")            # Peak Value USD Total
-        self.assertEqual(ws["V8"].value, "=SUM(V5:V7)")            # Closing Balance INR Total
-        self.assertEqual(ws["W8"].value, "=SUM(W5:W7)")            # Closing Value USD Total
-        self.assertEqual(ws["AE8"].value, "=SUM(AE5:AE7)")         # Gross Proceeds INR Total
-        self.assertEqual(ws["AF8"].value, "=SUM(AF5:AF7)")         # Gross Proceeds USD Total
+        # Totals are stored as values, not uncached formulas, so previews/data-only readers
+        # show them before desktop Excel has recalculated the workbook.
+        for col in ("J", "K", "L", "P", "Q", "V", "W", "AE", "AF"):
+            self.assertAlmostEqual(
+                ws[f"{col}8"].value,
+                sum(ws[f"{col}{row}"].value or 0 for row in range(5, 8)),
+                places=2,
+            )
 
     def test_sbi_rate_register_content(self):
         ws = self.wb["Audit_SBI_TTBR_Register"]
@@ -305,7 +303,7 @@ class TestITRWorkbookGenerator(unittest.TestCase):
         self.assertEqual(ws["E7"].value, 2224)  # Up16Of9To15Of12
         self.assertEqual(ws["E8"].value, 0)     # Up16Of12To15Of3
         self.assertEqual(ws["E9"].value, 0)     # Up16Of3To31Of3
-        self.assertEqual(ws["E10"].value, "=SUM(E5:E9)")
+        self.assertEqual(ws["E10"].value, 6544)
 
         # Verify transaction table has source document citation on row 15
         self.assertIn("(E*TRADE) Statement", ws["M15"].value)

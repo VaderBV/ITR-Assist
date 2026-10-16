@@ -12,6 +12,7 @@ from itr_assist.models import (
 from itr_assist.services.market_data import MarketDataService
 from itr_assist.services.sbi_rates import SBIRateService
 from itr_assist.services.valuation import (
+    A2GrossAmount,
     DividendTaxResult,
     FTCResult,
     ScheduleFATableA2Result,
@@ -54,9 +55,16 @@ def sample_a2():
         closing_balance_inr=358919,
         closing_date=date(2025, 12, 31),
         closing_rate_inr=89.47,
-        gross_amount_paid_credited_inr=6193,
-        nature_of_amount="D",
-        gross_amount_paid_credited_usd=70.54,
+        gross_amounts=[
+            A2GrossAmount(
+                nature="D",
+                amount_usd=70.54,
+                amount_inr=6193,
+                rate_inr=87.80,
+                rate_date=date(2025, 12, 31),
+                source="Synthetic statement fixture",
+            )
+        ],
     )
 
 
@@ -102,6 +110,7 @@ def sample_os_and_ftc():
             symbol="ACME",
             gross_usd=17.635,
             tax_usd=4.40875,
+            tax_deduction_date=date(2025, 6, 5),
             preceding_month_end=date(2025, 5, 31),
             rule_115_rate=85.10,
             gross_inr=1501,
@@ -117,6 +126,7 @@ def sample_os_and_ftc():
             symbol="ACME",
             gross_usd=17.635,
             tax_usd=4.40875,
+            tax_deduction_date=date(2025, 9, 5),
             preceding_month_end=date(2025, 8, 31),
             rule_115_rate=87.70,
             gross_inr=1547,
@@ -291,7 +301,6 @@ def test_invariant_1042s_reconciliation():
     )
     # Statement gross $70.54 rounds to $71.00 (diff $0.46 <= $1.00) -> PASS
     results = inv_val.validate_cross_document_reconciliation(
-        recon=None,
         form_1042s=form_1042s,
         cy_dividends_usd=70.54,
         cy_tax_withheld_usd=17.64,
@@ -300,7 +309,6 @@ def test_invariant_1042s_reconciliation():
 
     # Statement gross differs by more than $1.00 -> FAIL
     fail_results = inv_val.validate_cross_document_reconciliation(
-        recon=None,
         form_1042s=form_1042s,
         cy_dividends_usd=65.00,
         cy_tax_withheld_usd=17.64,
@@ -330,3 +338,73 @@ def test_validation_engine_pipeline(sbi_service, sample_a2, sample_a3_lot, sampl
     assert report.scorecard.defective_errors == 0
     assert report.scorecard.statutory_errors == 0
     assert report.scorecard.compute_status() == "100%_STATUTORILY_COMPLIANT"
+
+
+def _period(start, end):
+    from itr_assist.models import StatementPeriodSummary
+    return StatementPeriodSummary(
+        period_label=f"{start}..{end}", start_date=start, end_date=end,
+        beginning_value_usd=0.0, ending_value_usd=0.0,
+        cash_balance_usd=0.0, equities_value_usd=0.0, shares_held=0.0,
+    )
+
+
+def _rsu_lot(acq):
+    return ShareLot(
+        lot_id=f"X-{acq}", symbol="X", plan_type=PlanType.RSU, acquisition_date=acq,
+        gross_shares=10, withheld_shares=0, net_shares=10, vest_fmv_usd=10.0,
+        cost_basis_per_share_usd=10.0, remaining_shares=10, status=LotStatus.ACTIVE,
+    )
+
+
+def test_coverage_gaps_bundled_and_duplicate_periods_have_no_gap():
+    from itr_assist.validation.invariants import find_coverage_gaps
+    periods = [
+        _period(date(2024, 1, 1), date(2024, 2, 29)),   # E*TRADE folds a quiet month into the next statement
+        _period(date(2024, 3, 1), date(2024, 3, 31)),
+        _period(date(2024, 3, 1), date(2024, 3, 31)),   # same statement uploaded twice (two FY folders)
+        _period(date(2024, 4, 1), date(2024, 6, 30)),   # quarterly statement
+    ]
+    assert find_coverage_gaps(periods, date(2024, 1, 15), date(2024, 6, 30)) == []
+
+
+def test_coverage_gaps_reports_leading_middle_and_trailing_gaps_exactly():
+    from itr_assist.validation.invariants import find_coverage_gaps
+    periods = [
+        _period(date(2024, 3, 1), date(2024, 4, 30)),
+        _period(date(2024, 7, 1), date(2024, 7, 31)),
+    ]
+    assert find_coverage_gaps(periods, date(2024, 1, 1), date(2024, 9, 30)) == [
+        (date(2024, 1, 1), date(2024, 2, 29)),
+        (date(2024, 5, 1), date(2024, 6, 30)),
+        (date(2024, 8, 1), date(2024, 9, 30)),
+    ]
+    assert find_coverage_gaps([], date(2024, 1, 1), date(2024, 1, 31)) == [(date(2024, 1, 1), date(2024, 1, 31))]
+
+
+def test_statement_coverage_rule_spans_first_vest_through_fy_end():
+    inv_val = InvariantValidator()
+    lots = [_rsu_lot(date(2023, 11, 20)), _rsu_lot(date(2026, 2, 20))]  # 2026 vest is after CY2025 - ignored
+    full = [_period(date(2023, 11, 1), date(2026, 3, 31))]
+    (passed,) = inv_val.validate_statement_coverage(full, lots, 2025)
+    assert passed.status == RuleStatus.PASSED
+
+    # Only the filing year's own statements: a 2024 sale of the 2023 lot would be invisible.
+    filing_year_only = [_period(date(2025, 1, 1), date(2026, 3, 31))]
+    (failed,) = inv_val.validate_statement_coverage(filing_year_only, lots, 2025)
+    assert failed.status == RuleStatus.FAILED
+    assert failed.severity == Severity.STATUTORY_ERROR
+    assert "2023-11-20 to 2024-12-31" in failed.details
+
+
+def test_failed_audit_warning_rule_is_not_reported_as_fully_compliant(sbi_service, sample_a2, sample_a3_lot, sample_os_and_ftc):
+    from itr_assist.models import SaleEvent
+    os_res, ftc_res = sample_os_and_ftc
+    engine = ValidationEngine(sbi_service=sbi_service)
+    # An unmatched sale yields a FAILED rule of severity AUDIT_WARNING; the verdict must reflect it.
+    unmatched = SaleEvent(sale_date=date(2025, 6, 1), symbol="X", quantity=5, price_usd=10.0,
+                          gross_proceeds_usd=50.0, unmatched_quantity=5)
+    report = engine.validate(a2=sample_a2, a3_lots=[sample_a3_lot], os_result=os_res, ftc=ftc_res,
+                             cy_dividends_usd=35.27, cy_tax_withheld_usd=8.82, sales=[unmatched])
+    assert report.scorecard.failed >= 1
+    assert report.scorecard.compute_status() != "100%_STATUTORILY_COMPLIANT"

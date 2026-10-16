@@ -105,12 +105,13 @@ class ITRWorkbookGenerator:
                     a3_lots=a3_lots,
                     os_result=os_result,
                     ftc=ftc_result,
-                    recon=reconciliation_report,
                     form_1042s=form_1042s,
                     cy_dividends_usd=cy_div_usd,
                     cy_tax_withheld_usd=cy_tax_usd,
                     is_resident=True,
                     part_b_tti_sl19_yes=True,
+                    statement_summaries=statement_summaries,
+                    calendar_year=cy,
                 )
             except Exception:
                 val_report = None
@@ -177,9 +178,9 @@ class ITRWorkbookGenerator:
         kpi_rows = [
             ("Schedule FA - Table A2", f"Custodial Account Peak Balance (CY {cy})", f"${a2.peak_balance_usd:,.2f}", a2.peak_balance_inr, f"Peak on {a2.peak_date} @ SBI TTBR {a2.peak_rate_inr:.2f}"),
             ("Schedule FA - Table A2", f"Custodial Account Closing Balance (as on Dec 31, {cy})", f"${a2.closing_balance_usd:,.2f}", a2.closing_balance_inr, f"Dec 31, {cy} Value @ SBI TTBR {a2.closing_rate_inr:.2f}"),
-            ("Schedule FA - Table A3", f"Total Equity Lots Declared (Active in CY {cy})", f"{len(a3_lots)} Lots", sum(l.closing_balance_inr for l in a3_lots), f"Includes {report.sold_lots_count} Sold Lot (Sold in {next_cy})"),
+            ("Schedule FA - Table A3", f"Total Equity Lots Declared (Active in CY {cy})", f"{len(a3_lots)} Lots", sum(l.closing_balance_inr for l in a3_lots), f"Includes {sum(1 for l in a3_lots if l.is_sold_lot and l.disposal_date and l.disposal_date.year == cy)} lot(s) sold during {cy}"),
             ("Schedule OS", f"Gross Foreign Dividends (FY {fy})", f"${sum(i.gross_usd for i in os_res.items):,.2f}", os_res.total_dividend_inr, "Income from Other Sources (5 Installments)"),
-            ("Schedule FSI / TR", "Foreign Taxes Paid Abroad (25% US Withholding)", f"${sum(i.tax_usd for i in os_res.items):,.2f}", ftc_res.foreign_tax_paid_inr, "Rule 128(5)(ii) Preceding Month-End Conversion"),
+            ("Schedule FSI / TR", "Foreign Taxes Paid Abroad", f"${sum(i.tax_usd for i in os_res.items):,.2f}", ftc_res.foreign_tax_paid_inr, "Rule 128(5)(ii) Preceding Month-End Conversion"),
             ("Form 67 / Schedule TR", "Foreign Tax Credit (FTC) Claimed u/s 90", f"${sum(i.tax_usd for i in os_res.items):,.2f}", ftc_res.tax_relief_claimed_inr, "DTAA Article 10 (Restricted to Indian Tax Payable)"),
         ]
 
@@ -210,10 +211,13 @@ class ITRWorkbookGenerator:
         ws.cell(row=row_idx, column=2, value="DOCUMENT RECONCILIATION & SCRUTINY INTEGRITY STATUS").font = self._font_bold
         row_idx += 1
 
-        sl_summary = f"{report.sold_lots_count} Lot ({report.sold_lots[0].lot_id})" if report.sold_lots else f"{report.sold_lots_count} Lots"
-        holdings_finding = (
-            "; ".join(report.discrepancies) if report.status != "MATCH"
-            else "Reconstructed share balances reconcile with broker snapshot"
+        # Only lots sold DURING this calendar year belong here - the ledger-wide sold count also
+        # includes lots sold in earlier years, which aren't in this year's Table A3 at all.
+        sold_in_cy = [l for l in a3_lots if l.is_sold_lot and l.disposal_date and l.disposal_date.year == cy]
+        sold_summary = f"{len(sold_in_cy)} lot(s) sold during {cy}"
+        sold_finding = (
+            "Each declared in Table A3 with its peak value, a 31-Dec closing balance of 0 and its sale proceeds"
+            if sold_in_cy else f"No lots were sold during {cy}"
         )
 
         def _rule_result(rule_id: str):
@@ -234,20 +238,30 @@ class ITRWorkbookGenerator:
             div_tax_status = "RECONCILED"
             div_tax_finding = "Matches IRS Form 1042-S within statutory rounding tolerances"
 
+        cov_rule = _rule_result("INV-STATEMENT-COVERAGE")
+        if cov_rule:
+            cov_status = "UNBROKEN" if cov_rule.status.value == "PASSED" else "GAPS FOUND"
+            cov_finding = cov_rule.details
+        else:
+            cov_status = "NOT CHECKED"
+            cov_finding = "Statement coverage was not evaluated for this run"
+
         recon_checks = [
-            ("Current Holdings vs Reconstructed Shares", f"{report.total_holdings_shares:.1f} shs == {report.total_reconstructed_shares:.1f} shs", report.status, holdings_finding),
-            ("Sold Lot Compliance (Black Money Act)", sl_summary, "COMPLIANT", "Captured in Table A3 despite 0 sellable current shares"),
-            ("Calendar Year Dividends vs Form 1042-S", "Reconciled with IRS Form 1042-S", div_tax_status, div_tax_finding),
-            ("Custodial Statements Reconciliation", "Continuous Monthly Periods Analyzed", "UNBROKEN", "Full continuous portfolio and cash ledger verified"),
+            ("Lots Sold During the Year (Black Money Act)", sold_summary, "DECLARED" if sold_in_cy else "NONE", sold_finding),
+            ("Calendar Year Dividends vs Form 1042-S", "Statement dividends vs IRS Form 1042-S", div_tax_status, div_tax_finding),
+            ("Broker Statement Coverage", "Statement periods vs holding history", cov_status, cov_finding),
         ]
 
         if val_report:
+            sc = val_report.scorecard
             recon_checks.append(
                 (
                     f"CBDT Statutory & Schema Rules (AY {ay})",
-                    f"{val_report.scorecard.passed}/{val_report.scorecard.total_rules} Rules Evaluated",
-                    val_report.scorecard.compute_status(),
-                    "Passed 100% of CBDT JSON Schema, Systems PDF & IT Rules 115/128/90 (See Audit_Validation_Report)",
+                    f"{sc.passed}/{sc.total_rules} rules passed",
+                    sc.compute_status(),
+                    "All CBDT JSON Schema, Systems PDF & IT Rules 115/128/90 checks passed (see Audit_Validation_Report)"
+                    if sc.failed == 0
+                    else f"{sc.failed} check(s) failed - see Audit_Validation_Report for details",
                 )
             )
 
@@ -267,13 +281,15 @@ class ITRWorkbookGenerator:
             ws.cell(row=row_idx, column=3, value=data_pt).font = self._font_regular
             c_stat = ws.cell(row=row_idx, column=4, value=status)
             c_stat.alignment = Alignment(horizontal="center")
-            if status in ("MATCH", "COMPLIANT", "RECONCILED", "UNBROKEN", "100%_STATUTORILY_COMPLIANT"):
+            if status in ("RECONCILED", "UNBROKEN", "DECLARED", "NONE", "100%_STATUTORILY_COMPLIANT"):
                 c_stat.font = self._font_bold
                 c_stat.fill = PatternFill(start_color=COLOR_SUCCESS_GREEN, end_color=COLOR_SUCCESS_GREEN, fill_type="solid")
+            elif status in ("FILING_READY_WITH_WARNINGS", "NOT CHECKED"):
+                c_stat.font = Font(name="Calibri", size=11, bold=True, color="B25E00")
+                c_stat.fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
             else:
-                # A non-passing status (e.g. DISCREPANCY) was previously left with no fill at
-                # all - a plain, unstyled cell sitting next to otherwise-green ones reads as
-                # broken formatting rather than a deliberate warning. Flag it visibly instead.
+                # Every non-passing status gets an explicit fill - an unstyled cell next to green
+                # ones reads as broken formatting rather than a deliberate warning.
                 c_stat.font = Font(name="Calibri", size=11, bold=True, color="C00000")
                 c_stat.fill = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")
 
@@ -302,9 +318,8 @@ class ITRWorkbookGenerator:
 
         doc_provenance = [
             ("Benefit History Spreadsheet", "Broker Benefit History Export", "All historical RSU & ESPP vests (tranche dates, shares, vest FMV)", "Feeds Table A3 initial values, acquisition dates, & sold lot tracking"),
-            ("Current Holdings Snapshot", "Broker Holdings Export", "Active sellable shares snapshot at export time", "Reconciled with reconstructed ledger to detect active vs sold lots"),
-            ("Calendar Year Statements", "Broker Calendar Year Statement PDF", "Monthly portfolio net values, cash balance, and dividend transactions", "Feeds Table A2 peak/closing balances & Schedule OS dividends"),
-            ("Q4 / FY-End Statements", "Broker Q4 Statement PDF", "Jan-Mar statements completing continuous 15-month Indian FY window", "Feeds Schedule OS Q4 dividend income & verifies unbroken lot ledger"),
+            ("Current Holdings Snapshot", "Broker Holdings Export", "Active sellable shares snapshot at export time", "Informational only - an as-of-today snapshot, not used for this year's figures"),
+            ("Broker Statements", "Broker Client Statement PDFs (full history)", "Period net values, cash balance, dividend and sale transactions", "Feed Table A2 closing balance, Schedule OS dividends, and the sale events that mark lots as disposed"),
             ("Form 1042-S Tax Document", "IRS Form 1042-S PDF", "IRS Form 1042-S Box 2 & Box 7a (Gross foreign dividend & federal tax withheld)", "Verifies Schedule OS gross income & validates Schedule FSI / TR Foreign Tax Credit"),
             ("SBI Reference Rate Archive", "SBI_REFERENCE_RATES_USD.csv", "Official SBI TT Buying Rates for all transaction dates and preceding month ends", "Mandatory statutory exchange rates under Rule 115 and Rule 128"),
             ("Stock Price History", hist_fname, f"Daily Open/High/Low/Close prices for {sym_str}", "Mathematical proof for Table A2 and Table A3 statutory peak valuations"),
@@ -368,60 +383,59 @@ class ITRWorkbookGenerator:
             cell.border = self._border_thin
         ws.row_dimensions[row_idx].height = 35
 
-        # Row 5: Actual Data
-        row_idx = 5
-        data = [
-            (a2.country_name, False, "center", "@", False),
-            (a2.country_code, False, "center", "@", False),
-            (a2.financial_inst_name, False, "left", "@", False),
-            (a2.financial_inst_address, False, "left", "@", False),
-            (a2.zip_code, False, "center", "@", False),
-            (a2.account_number, False, "center", "@", False),
-            (a2.status, False, "center", "@", False),
-            (a2.account_open_date, False, "center", "YYYY-MM-DD", False),
-            # Peak Group:
-            (a2.peak_balance_inr, False, "right", "₹ #,##,##0", True),
-            (a2.peak_balance_usd, True, "right", "$#,##0.00", True),
-            (a2.peak_date.strftime("%Y-%m-%d"), True, "center", "YYYY-MM-DD", False),
-            (a2.peak_rate_inr, True, "right", "0.00", False),
-            (a2.source_peak, True, "left", "@", False),
-            # Closing Group:
-            (a2.closing_balance_inr, False, "right", "₹ #,##,##0", True),
-            (a2.closing_balance_usd, True, "right", "$#,##0.00", True),
-            (a2.closing_date.strftime("%Y-%m-%d"), True, "center", "YYYY-MM-DD", False),
-            (a2.closing_rate_inr, True, "right", "0.00", False),
-            (a2.source_closing, True, "left", "@", False),
-            # Gross Group:
-            (a2.gross_amount_paid_credited_inr, False, "right", "₹ #,##,##0", True),
-            (a2.gross_amount_paid_credited_usd, True, "right", "$#,##0.00", True),
-            (a2.source_gross, True, "left", "@", False),
-            (a2.nature_of_amount, False, "center", "@", False)
-        ]
+        # CBDT allows one NatureOfAmount per A2 row. Repeat the account values when the
+        # account received more than one nature of credit (dividend, interest, proceeds).
+        for row_idx, gross in enumerate(a2.gross_amounts, start=5):
+            data = [
+                (a2.country_name, False, "center", "@", False),
+                (a2.country_code, False, "center", "@", False),
+                (a2.financial_inst_name, False, "left", "@", False),
+                (a2.financial_inst_address, False, "left", "@", False),
+                (a2.zip_code, False, "center", "@", False),
+                (a2.account_number, False, "center", "@", False),
+                (a2.status, False, "center", "@", False),
+                (a2.account_open_date, False, "center", "YYYY-MM-DD", False),
+                (a2.peak_balance_inr, False, "right", "₹ #,##,##0", True),
+                (a2.peak_balance_usd, True, "right", "$#,##0.00", True),
+                (a2.peak_date.strftime("%Y-%m-%d"), True, "center", "YYYY-MM-DD", False),
+                (a2.peak_rate_inr, True, "right", "0.00", False),
+                (a2.source_peak, True, "left", "@", False),
+                (a2.closing_balance_inr, False, "right", "₹ #,##,##0", True),
+                (a2.closing_balance_usd, True, "right", "$#,##0.00", True),
+                (a2.closing_date.strftime("%Y-%m-%d"), True, "center", "YYYY-MM-DD", False),
+                (a2.closing_rate_inr, True, "right", "0.00", False),
+                (a2.source_closing, True, "left", "@", False),
+                (gross.amount_inr, False, "right", "₹ #,##,##0", True),
+                (gross.amount_usd, True, "right", "$#,##0.00", True),
+                (gross.source, True, "left", "@", False),
+                (gross.nature, False, "center", "@", False),
+            ]
 
-        for col_idx, (val, is_working, align, num_fmt, is_bold) in enumerate(data, start=1):
-            cell = ws.cell(row=row_idx, column=col_idx, value=val)
-            cell.alignment = Alignment(horizontal=align, vertical="center")
-            cell.number_format = num_fmt
-            cell.border = self._border_thin
-            if is_working:
-                cell.fill = self._fill_working
-                cell.font = self._font_working_bold if is_bold else self._font_working
-            else:
-                cell.font = self._font_bold if is_bold else self._font_regular
+            for col_idx, (val, is_working, align, num_fmt, is_bold) in enumerate(data, start=1):
+                cell = ws.cell(row=row_idx, column=col_idx, value=val)
+                cell.alignment = Alignment(horizontal=align, vertical="center")
+                cell.number_format = num_fmt
+                cell.border = self._border_thin
+                if is_working:
+                    cell.fill = self._fill_working
+                    cell.font = self._font_working_bold if is_bold else self._font_working
+                else:
+                    cell.font = self._font_bold if is_bold else self._font_regular
 
         # Explanatory Notes below table
-        ws["A7"] = "STATUTORY AUDIT & CALCULATION NOTES FOR TABLE A2:"
-        ws["A7"].font = self._font_bold
+        notes_row = 6 + len(a2.gross_amounts)
+        ws.cell(row=notes_row, column=1, value="STATUTORY AUDIT & CALCULATION NOTES FOR TABLE A2:").font = self._font_bold
+        gross_usd = sum(item.amount_usd for item in a2.gross_amounts)
+        gross_natures = ", ".join(item.nature for item in a2.gross_amounts)
         notes = [
             f"1. Peak Balance (Col 9): Computed on {a2.peak_date} when total custodial holdings reached ${a2.peak_balance_usd:,.2f} converted at SBI TTBR ₹ {a2.peak_rate_inr:.2f}.",
             f"2. Closing Balance (Col 10): Computed as on Dec 31, {cy} with total account value ${a2.closing_balance_usd:,.2f} converted at Dec 31 SBI TTBR ₹ {a2.closing_rate_inr:.2f}.",
-            f"3. Gross Amount (Col 11): Total gross dividends received during Calendar Year {cy} (${a2.gross_amount_paid_credited_usd:.2f}) converted to INR.",
-            f"4. Nature of Amount (Col 12): 'D' signifies Dividend income as per CBDT schema options.",
+            f"3. Gross Amount (Col 11): Total gross amounts credited during Calendar Year {cy} (${gross_usd:.2f}) are split into one row per nature.",
+            f"4. Nature of Amount (Col 12): Reported CBDT nature code(s): {gross_natures}.",
             f"5. Source Evidence: Full monthly statements and SBI Card rate sheets are cross-verified and indexed in Sheet 1."
         ]
-        for idx, n in enumerate(notes, start=8):
-            ws[f"A{idx}"] = n
-            ws[f"A{idx}"].font = self._font_small
+        for idx, n in enumerate(notes, start=notes_row + 1):
+            ws.cell(row=idx, column=1, value=n).font = self._font_small
 
         self._auto_fit_columns(ws)
 
@@ -572,47 +586,47 @@ class ITRWorkbookGenerator:
         ws.cell(row=row_idx, column=2).alignment = Alignment(horizontal="center")
 
         # Col 10: Initial Value INR (Statutory)
-        ws.cell(row=row_idx, column=10, value=f"=SUM(J5:J{row_idx-1})").font = self._font_bold
+        ws.cell(row=row_idx, column=10, value=sum(l.initial_value_inr for l in a3_lots)).font = self._font_bold
         ws.cell(row=row_idx, column=10).number_format = "₹ #,##,##0"
 
         # Col 11: Initial Cost USD (Working)
-        ws.cell(row=row_idx, column=11, value=f"=SUM(K5:K{row_idx-1})").font = self._font_working_bold
+        ws.cell(row=row_idx, column=11, value=sum(l.initial_cost_usd for l in a3_lots)).font = self._font_working_bold
         ws.cell(row=row_idx, column=11).number_format = "$#,##0.00"
 
         # Col 12: Net Shares (Working)
-        ws.cell(row=row_idx, column=12, value=f"=SUM(L5:L{row_idx-1})").font = self._font_working_bold
+        ws.cell(row=row_idx, column=12, value=sum(l.net_shares for l in a3_lots)).font = self._font_working_bold
         ws.cell(row=row_idx, column=12).alignment = Alignment(horizontal="center")
 
         # Col 16: Peak Balance INR (Statutory)
-        ws.cell(row=row_idx, column=16, value=f"=SUM(P5:P{row_idx-1})").font = self._font_bold
+        ws.cell(row=row_idx, column=16, value=sum(l.peak_balance_inr for l in a3_lots)).font = self._font_bold
         ws.cell(row=row_idx, column=16).number_format = "₹ #,##,##0"
 
         # Col 17: Peak Value USD (Working)
-        ws.cell(row=row_idx, column=17, value=f"=SUM(Q5:Q{row_idx-1})").font = self._font_working_bold
+        ws.cell(row=row_idx, column=17, value=sum(l.peak_balance_usd for l in a3_lots)).font = self._font_working_bold
         ws.cell(row=row_idx, column=17).number_format = "$#,##0.00"
 
         # Col 22: Closing Balance INR (Statutory)
-        ws.cell(row=row_idx, column=22, value=f"=SUM(V5:V{row_idx-1})").font = self._font_bold
+        ws.cell(row=row_idx, column=22, value=sum(l.closing_balance_inr for l in a3_lots)).font = self._font_bold
         ws.cell(row=row_idx, column=22).number_format = "₹ #,##,##0"
 
         # Col 23: Closing Value USD (Working)
-        ws.cell(row=row_idx, column=23, value=f"=SUM(W5:W{row_idx-1})").font = self._font_working_bold
+        ws.cell(row=row_idx, column=23, value=sum(l.closing_balance_usd for l in a3_lots)).font = self._font_working_bold
         ws.cell(row=row_idx, column=23).number_format = "$#,##0.00"
 
         # Col 28: Gross Dividends INR (Statutory)
-        ws.cell(row=row_idx, column=28, value=f"=SUM(AB5:AB{row_idx-1})").font = self._font_bold
+        ws.cell(row=row_idx, column=28, value=sum(l.gross_dividends_inr for l in a3_lots)).font = self._font_bold
         ws.cell(row=row_idx, column=28).number_format = "₹ #,##,##0"
 
         # Col 29: Gross Dividends USD (Working)
-        ws.cell(row=row_idx, column=29, value=f"=SUM(AC5:AC{row_idx-1})").font = self._font_working_bold
+        ws.cell(row=row_idx, column=29, value=sum(l.gross_dividends_usd for l in a3_lots)).font = self._font_working_bold
         ws.cell(row=row_idx, column=29).number_format = "$#,##0.00"
 
         # Col 31: Gross Proceeds INR (Statutory)
-        ws.cell(row=row_idx, column=31, value=f"=SUM(AE5:AE{row_idx-1})").font = self._font_bold
+        ws.cell(row=row_idx, column=31, value=sum(l.gross_proceeds_inr for l in a3_lots)).font = self._font_bold
         ws.cell(row=row_idx, column=31).number_format = "₹ #,##,##0"
 
         # Col 32: Gross Proceeds USD (Working)
-        ws.cell(row=row_idx, column=32, value=f"=SUM(AF5:AF{row_idx-1})").font = self._font_working_bold
+        ws.cell(row=row_idx, column=32, value=sum(l.gross_proceeds_usd for l in a3_lots)).font = self._font_working_bold
         ws.cell(row=row_idx, column=32).number_format = "$#,##0.00"
 
         for c in range(1, 35):
@@ -667,7 +681,7 @@ class ITRWorkbookGenerator:
 
         # Total Line
         ws.cell(row=row_idx, column=2, value="TOTAL SCHEDULE OS DIVIDEND").font = self._font_bold
-        c_tot = ws.cell(row=row_idx, column=5, value=f"=SUM(E5:E{row_idx-1})")
+        c_tot = ws.cell(row=row_idx, column=5, value=os_res.total_dividend_inr)
         c_tot.font = self._font_bold
         c_tot.number_format = "₹ #,##,##0"
         c_tot.alignment = Alignment(horizontal="right")
@@ -682,7 +696,7 @@ class ITRWorkbookGenerator:
         txn_headers = [
             "Dividend Pay Date", "Symbol", "Gross Amount (USD)", "Preceding Month End Date",
             "Rule 115 SBI TTBR (₹)", "Gross Dividend in INR (₹)", "US Tax Withheld (USD)",
-            "Rule 128 Deduction Date", "Rule 128 SBI TTBR (₹)", "Foreign Tax Paid (₹)", "Applicable Advance Tax Bucket",
+            "Foreign Tax Deduction/Payment Date", "Rule 128 SBI TTBR (₹)", "Foreign Tax Paid (₹)", "Applicable Advance Tax Bucket",
             "Data Source Document (Audit Provenance)"
         ]
 
@@ -697,7 +711,7 @@ class ITRWorkbookGenerator:
         row_idx += 1
         for item in os_res.items:
             row_data = [
-                item.pay_date.strftime("%Y-%m-%d"),
+                item.tax_deduction_date.strftime("%Y-%m-%d"),
                 item.symbol,
                 item.gross_usd,
                 item.preceding_month_end.strftime("%Y-%m-%d"),
@@ -979,7 +993,7 @@ class ITRWorkbookGenerator:
             "(Rule 128(9), as amended by CBDT Notification No. 100/2022 dated 18-Aug-2022), provided the return "
             "itself is filed within the time limit under Section 139(1) or 139(4). For income added via an "
             "updated return under Section 139(8A), Form 67 must be filed by the date that updated return is furnished.",
-            "2. Attachments Required: Upload Form 1042-S PDF and E*TRADE 15-Month Statement PDF as proof of foreign tax payment.",
+            "2. Attachments Required: Upload the applicable foreign tax certificate(s) and broker statements as proof of foreign tax payment.",
             "3. Digital Verification: Form 67 must be verified electronically via Aadhaar OTP, EVC, or Digital Signature Certificate (DSC).",
             f"4. Portal Reconciliation: Ensure the FTC Claimed amount (₹ {ftc.tax_relief_claimed_inr:,}) matches Schedule TR and Schedule FSI identically."
         ]
@@ -997,9 +1011,14 @@ class ITRWorkbookGenerator:
 
         ws["A1"] = f"CBDT STATUTORY & e-FILING RULES VALIDATION SCORECARD (AY {ay})"
         ws["A1"].font = self._font_title
+        version_specific_ran = any(r.rule_id.startswith("SCHEMA-") for r in val_report.results)
         ws["A2"] = (
-            "Automated statutory verification against CBDT JSON Schema (ITR-2_2026_Main_V1.2.json), "
-            "CBDT Systems Validation Rules PDF, and IT Rules 1962 (Rule 115, 128, Sec 90, 288A/B)"
+            "Automated verification against the AY 2026-27 CBDT JSON schema and systems rules, "
+            "plus IT Rules 1962 (Rule 115, 128, Sec 90, 288A/B)"
+            if version_specific_ran else
+            "Year-independent verification under IT Rules 1962 (Rule 115, 128, Sec 90, 288A/B). "
+            "Assessment-year-specific CBDT schema/systems validation was not run because that "
+            "historical return version is not bundled."
         )
         ws["A2"].font = self._font_subtitle
 
@@ -1230,11 +1249,11 @@ class ITRWorkbookGenerator:
 
         # 4. Schedule FSI / TR Foreign Tax Withheld
         for item in os_res.items:
-            used_d, notes = get_rollback_info(item.pay_date)
+            used_d, notes = get_rollback_info(item.tax_deduction_date)
             items.append((
                 "Schedule FSI & TR / Form 67",
-                f"Foreign Tax Withholding (25% IRS Tax) ({item.symbol}) - {item.advance_tax_bucket}",
-                item.pay_date,
+                f"Foreign Tax Withholding ({item.symbol}) - {item.advance_tax_bucket}",
+                item.tax_deduction_date,
                 "Rule 128(5)(ii) - Rate on last day of month preceding deduction of foreign tax",
                 used_d,
                 item.rule_128_rate,
@@ -1334,7 +1353,7 @@ class ITRWorkbookGenerator:
             elif "preceding month" in rule:
                 unique_map[rate_d]["purposes"].add("Dividend Income (Rule 115 Preceding Month End)")
             elif "Rule 128" in rule:
-                unique_map[rate_d]["purposes"].add("Foreign Tax Withholding (Rule 128 Deduction Date)")
+                unique_map[rate_d]["purposes"].add("Foreign Tax Withholding (Rule 128)")
 
         sorted_unique_dates = sorted(unique_map.keys())
         for u_idx, u_date in enumerate(sorted_unique_dates, start=1):

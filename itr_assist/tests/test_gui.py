@@ -8,6 +8,7 @@ import pytest
 
 from itr_assist.gui import ITRAssistGUI
 from itr_assist.services.valuation import (
+    A2GrossAmount,
     DividendTaxResult,
     FTCResult,
     ScheduleFATableA2Result,
@@ -137,8 +138,16 @@ def test_gui_generation_success_callback(gui_app: ITRAssistGUI):
         closing_balance_inr=360844,
         closing_date=date(2025, 12, 31),
         closing_rate_inr=89.473,
-        gross_amount_paid_credited_inr=6174,
-        nature_of_amount="Gross Dividends",
+        gross_amounts=[
+            A2GrossAmount(
+                nature="D",
+                amount_usd=70.0,
+                amount_inr=6174,
+                rate_inr=88.20,
+                rate_date=date(2025, 12, 31),
+                source="Synthetic GUI fixture",
+            )
+        ],
     )
 
     a3_dummy = [
@@ -180,6 +189,7 @@ def test_gui_generation_success_callback(gui_app: ITRAssistGUI):
         symbol="ACME",
         gross_usd=13.0,
         tax_usd=3.25,
+        tax_deduction_date=date(2025, 6, 6),
         preceding_month_end=date(2025, 5, 30),
         rule_115_rate=85.00,
         gross_inr=1105,

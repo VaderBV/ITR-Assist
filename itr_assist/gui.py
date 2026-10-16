@@ -611,13 +611,15 @@ class ITRAssistGUI:
                 a3_lots=a3_res,
                 os_result=os_res,
                 ftc=ftc_res,
-                recon=report,
                 form_1042s=form_1042s,
                 cy_dividends_usd=cy_div_usd,
                 cy_tax_withheld_usd=cy_tax_usd,
                 is_resident=True,
                 part_b_tti_sl19_yes=True,
                 sales=enriched_sales,
+                statement_summaries=summaries,
+                lots=ledger.lots,
+                calendar_year=cy,
             )
             sc = val_report.scorecard
             self._log(f"      • Rules Evaluated: {sc.total_rules}  |  Passed: {sc.passed}  |  Failed: {sc.failed}")
