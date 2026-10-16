@@ -4,6 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code Style: Black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![Statutory Rules: AY 2026-27](https://img.shields.io/badge/CBDT-AY%202026--27%20V1.2-green.svg)](https://www.incometax.gov.in/)
+[![Deploy GitHub Pages](https://github.com/VaderBV/ITR-Assist/actions/workflows/pages.yml/badge.svg)](https://github.com/VaderBV/ITR-Assist/actions/workflows/pages.yml)
 
 **ITR Assist** is an open-source, privacy-first automation utility designed for Indian residents holding foreign company shares (RSUs, ESPPs, direct stock) via US brokerages (such as E*TRADE / Morgan Stanley, Fidelity, Schwab).
 
@@ -15,15 +16,15 @@ It ingests standard broker exports (PDF account statements, Excel benefit histor
 
 ## 🔒 Strict Data Privacy Guarantee
 
-> **100% Local Execution — Zero Data Leaves Your Machine**
+> **Your uploaded financial documents are processed locally in your browser or on your machine.**
 
-* **Zero Telemetry / Analytics:** There is no tracking, logging, or third-party cloud communication.
+* **Zero Telemetry / Analytics:** There is no tracking, analytics, or application telemetry.
 * **No Embedded PII or User Profiles:** No personal data (PAN, taxpayer name, account numbers, employer details) is hardcoded or stored in configuration files.
 * **In-Memory Dynamic Extraction:** The utility dynamically reads taxpayer details directly from your broker tax documents (IRS Form 1042-S) and account statements during execution and places them solely into the final generated local workbook.
-* **Public Reference Data Only:** 
-  * **SBI TT Buying Rates:** If connected to the internet, the tool automatically syncs historical State Bank of India reference rates from the public [SBI FX Ratekeeper Archive](https://github.com/sahilgupta/sbi-fx-ratekeeper). It falls back to the local disk cache if offline.
-  * **Stock Closing Prices:** Peak and closing market valuations are fetched directly from Yahoo Finance and cached locally.
-  * No credentials, private tokens, or user data are ever transmitted during these public requests.
+* **Public Network Requests:** The hosted app downloads Pyodide and its public Python dependencies, and it requests public exchange-rate and market-price data. The browser market-data key is sent only to the configured market-data provider. Uploaded broker documents, extracted taxpayer data, and generated workbooks are never included in those requests.
+* **Public Reference Data Only:**
+  * **SBI TT Buying Rates:** The tool can sync historical State Bank of India reference rates from the public [SBI FX Ratekeeper Archive](https://github.com/sahilgupta/sbi-fx-ratekeeper) and falls back to the bundled/cache snapshot if offline.
+  * **Stock Closing Prices:** Verified peak and closing market valuations are fetched from Yahoo Finance or Twelve Data and cached locally.
 
 ---
 
@@ -67,6 +68,10 @@ window.ITR_ASSIST_MARKET_API_KEY = "your-key-here";
 ```
 
 This file is git-ignored — it stays on your machine and is never committed or uploaded anywhere.
+
+#### GitHub Pages deployment
+
+The repository includes `.github/workflows/pages.yml`, which publishes the contents of `web/` whenever a change to the site reaches `main`. In the repository settings, select **Settings → Pages → Source → GitHub Actions** once; subsequent deployments are automatic. The workflow can also be run manually from the Actions tab.
 
 ### Option B: Desktop GUI / CLI (Python)
 
